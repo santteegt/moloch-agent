@@ -233,6 +233,45 @@ const transport = new StdioClientTransport({
 });
 ```
 
+### Example tool calls
+
+`arguments` for a `tools/call` request, one from each tool category above.
+
+A build-only write tool — build (not send) a generic custom-action proposal:
+
+```json
+{
+  "name": "moloch_custom_proposal",
+  "arguments": {
+    "dao": "0xf58be4395defe88ca261c2d869642c06baccec16",
+    "title": "Whitelist a new signer",
+    "actions": [{ "to": "0x00000000000000000000000000000000000abc", "data": "0x", "operation": 0 }]
+  }
+}
+```
+
+returns `{ summary: {...}, tx: { chainId: 8453, to, value, data } }` — sign and send `tx` yourself.
+
+A direct chain read:
+
+```json
+{
+  "name": "moloch_read_dao",
+  "arguments": { "dao": "0xf58be4395defe88ca261c2d869642c06baccec16" }
+}
+```
+
+A hosted-service passthrough that pins a proposal workspace document before referencing it as `link` in a write tool:
+
+```json
+{
+  "name": "moloch_service_pin_json",
+  "arguments": { "name": "proposal-workspace", "data": { "schema": "proposal-workspace/v1", "title": "..." } }
+}
+```
+
+returns `{ cid, uri, gatewayUrl }` — `uri` is what you'd pass as `link`/`workspaceURI` to a proposal-creating write tool.
+
 ## Boundaries
 
 - The hosted service handles Graph reads and Pinata uploads.

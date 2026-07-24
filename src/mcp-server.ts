@@ -172,6 +172,24 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
     }
   }
 
+  // Annotation policy (per the MCP spec's ToolAnnotations, which readOnlyHint
+  // makes the primary signal — destructiveHint/idempotentHint are only
+  // meaningful once readOnlyHint is false):
+  // - readOnlyHint: true for every tool except moloch_service_pin_json. The
+  //   "write" tools only build and return calldata; they never sign, send,
+  //   or otherwise mutate anything, so they don't modify their environment
+  //   any more than a read does. moloch_service_pin_json is the one
+  //   exception: it performs a real HTTP write to the hosted pinning
+  //   service as soon as it's called.
+  // - destructiveHint: false everywhere; nothing here ever destroys state.
+  // - idempotentHint: true almost everywhere (repeated calls have no
+  //   additional effect, trivially, since nothing has any effect). false
+  //   for moloch_summon (random saltNonce when omitted), moloch_memory_post
+  //   (stamps createdAt), and moloch_dao_meta (stamps updatedAt) — same
+  //   input can still produce different calldata across calls, and
+  //   moloch_service_pin_json (each call creates a new pin).
+  // - openWorldHint: false for pure builders with no I/O at all; true for
+  //   anything that reads the chain or the hosted service.
   server.registerTool(
     'moloch_summon',
     {
@@ -179,7 +197,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
       description: `Builds the unsigned transaction that summons a new Moloch v3 (Baal) DAO on Base via the DAOhaus v3 advanced-token summoner, including governance config, shamans, and summoner metadata in one call. ${BUILD_ONLY_NOTE}`,
       inputSchema: { params: SummonParamsSchema },
       outputSchema: BuiltTxOutputSchema,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
     async ({ params }) => safeBuiltTx(() => buildSummonTx({ chainId, params: params as SummonParams })),
   );
@@ -194,7 +212,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
         weth: AddressSchema.optional().describe('WETH contract address. Defaults to Base WETH (0x4200...0006).'),
       },
       outputSchema: BuiltTxOutputSchema,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async ({ amountWei, weth }) => safeBuiltTx(() => buildWrapEthTx({
       chainId,
@@ -213,7 +231,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
         weth: AddressSchema.optional().describe('WETH contract address. Defaults to Base WETH (0x4200...0006).'),
       },
       outputSchema: BuiltTxOutputSchema,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async ({ amountWei, weth }) => safeBuiltTx(() => buildUnwrapEthTx({
       chainId,
@@ -233,7 +251,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
         amountRaw: RawUintSchema.describe('Approval amount, in the token\'s raw base units.'),
       },
       outputSchema: BuiltTxOutputSchema,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async ({ token, spender, amountRaw }) => safeBuiltTx(() => buildApproveTokenTx({
       chainId,
@@ -262,7 +280,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
         proposalOfferingRaw: RawUintSchema.optional().describe('ETH proposal offering (transaction value), in wei. Defaults to 0; read the DAO\'s proposalOffering via moloch_read_dao if the DAO requires one.'),
       },
       outputSchema: BuiltTxOutputSchema,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async ({ dao, token, amountRaw, sharesRaw, lootRaw, title, description, link, expiration, baalGasRaw, proposalOfferingRaw }) => safeBuiltTx(() => buildTributeTx({
       chainId,
@@ -287,7 +305,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
       description: `Builds an unsigned sponsorProposal transaction, moving a submitted proposal into voting. Caller must hold at least the DAO's sponsorThreshold in shares. ${BUILD_ONLY_NOTE}`,
       inputSchema: { dao: AddressSchema, proposal: ProposalIdSchema },
       outputSchema: BuiltTxOutputSchema,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async ({ dao, proposal }) => safeBuiltTx(() => buildSponsorTx({ chainId, dao: asAddress(dao), proposal })),
   );
@@ -303,7 +321,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
         approved: z.boolean().describe('true for a yes vote, false for a no vote.'),
       },
       outputSchema: BuiltTxOutputSchema,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async ({ dao, proposal, approved }) => safeBuiltTx(() => buildVoteTx({ chainId, dao: asAddress(dao), proposal, approved })),
   );
@@ -320,7 +338,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
         gasLimitRaw: RawUintSchema.optional().describe('Gas limit override, in raw units.'),
       },
       outputSchema: BuiltTxOutputSchema,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async ({ dao, proposal, proposalData, gasLimitRaw }) => safeBuiltTx(() => buildProcessTx({
       chainId,
@@ -341,7 +359,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
         first: z.number().int().positive().max(1000).optional().describe('Number of indexed proposals to scan. Defaults to 100.'),
       },
       outputSchema: BuiltTxOutputSchema,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
     async ({ dao, first }) => {
       try {
@@ -373,7 +391,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
         proposalOfferingRaw: RawUintSchema.optional().describe('ETH proposal offering (transaction value), in wei. Defaults to 0.'),
       },
       outputSchema: BuiltTxOutputSchema,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async ({ dao, recipients, amountsRaw, title, description, link, expiration, baalGasRaw, proposalOfferingRaw }) => safeBuiltTx(() => buildMintSharesTx({
       chainId,
@@ -406,7 +424,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
         proposalOfferingRaw: RawUintSchema.optional().describe('ETH proposal offering (transaction value), in wei. Defaults to 0.'),
       },
       outputSchema: BuiltTxOutputSchema,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async ({ dao, recipients, amountsRaw, title, description, link, expiration, baalGasRaw, proposalOfferingRaw }) => safeBuiltTx(() => buildMintLootTx({
       chainId,
@@ -440,7 +458,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
         proposalOfferingRaw: RawUintSchema.optional().describe('ETH proposal offering (transaction value), in wei. Defaults to 0.'),
       },
       outputSchema: BuiltTxOutputSchema,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async ({ dao, recipient, amountRaw, token, title, description, link, expiration, baalGasRaw, proposalOfferingRaw }) => safeBuiltTx(() => buildPaymentTx({
       chainId,
@@ -464,7 +482,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
       description: `Builds an unsigned cancelProposal transaction. Only the proposal's sponsor (or the DAO's shaman permissions allowing) can cancel. ${BUILD_ONLY_NOTE}`,
       inputSchema: { dao: AddressSchema, proposal: ProposalIdSchema },
       outputSchema: BuiltTxOutputSchema,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async ({ dao, proposal }) => safeBuiltTx(() => buildCancelTx({ chainId, dao: asAddress(dao), proposal })),
   );
@@ -483,7 +501,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
           .describe('Treasury token list, ascending-sorted by address (Baal requirement). Get this from moloch_treasury_tokens\'s ragequitTokensCsv.'),
       },
       outputSchema: BuiltTxOutputSchema,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async ({ dao, to, sharesToBurnRaw, lootToBurnRaw, tokens }) => safeBuiltTx(() => buildRagequitTx({
       chainId,
@@ -520,7 +538,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
         tag: z.string().optional().describe('Poster tag. Defaults to the member-database tag.'),
       },
       outputSchema: BuiltTxOutputSchema,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
     async ({ dao, table, type, threadId, topicId, proposalId, draftId, title, body, vote, contentURI, contentHash, workspaceURI, stateURI, agent, version, tag }) => safeBuiltTx(() => buildMemoryPostTx({
       chainId,
@@ -559,7 +577,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
         proposalOfferingRaw: RawUintSchema.optional().describe('ETH proposal offering (transaction value), in wei. Defaults to 0; read the DAO\'s proposalOffering via moloch_read_dao if the DAO requires one.'),
       },
       outputSchema: BuiltTxOutputSchema,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async ({ dao, title, description, link, expiration, baalGasRaw, proposalOfferingRaw }) => safeBuiltTx(() => buildSignalTx({
       chainId,
@@ -594,7 +612,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
         proposalOfferingRaw: RawUintSchema.optional().describe('ETH proposal offering (transaction value), in wei. Defaults to 0.'),
       },
       outputSchema: BuiltTxOutputSchema,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
     async ({ dao, title, description, link, name, daoDescription, communityMemoryURI, proposalWorkspaceURI, sharedStateURI, web, expiration, baalGasRaw, proposalOfferingRaw }) => safeBuiltTx(() => buildDaoMetaTx({
       chainId,
@@ -638,7 +656,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
         }),
       },
       outputSchema: BuiltTxOutputSchema,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async ({ dao, link, params }) => safeBuiltTx(() => buildGovernanceSettingsTx({
       chainId,
@@ -678,7 +696,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
         proposalOfferingRaw: RawUintSchema.optional().describe('ETH proposal offering (transaction value), in wei. Defaults to 0.'),
       },
       outputSchema: BuiltTxOutputSchema,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async ({ dao, pauseShares, pauseLoot, title, description, link, expiration, baalGasRaw, proposalOfferingRaw }) => safeBuiltTx(() => buildTokenSettingsTx({
       chainId,
@@ -716,7 +734,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
         proposalOfferingRaw: RawUintSchema.optional().describe('ETH proposal offering (transaction value), in wei. Defaults to 0.'),
       },
       outputSchema: BuiltTxOutputSchema,
-      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
     async ({ dao, title, description, link, proposalType, actions, expiration, baalGasRaw, proposalOfferingRaw }) => safeBuiltTx(() => buildCustomProposalTx({
       chainId,
@@ -805,7 +823,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
         dao: AddressSchema,
         first: z.number().int().positive().max(1000).optional().describe('Number of indexed proposals to scan. Defaults to 100.'),
       },
-      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
     async ({ dao, first }) => safeRead(() => processQueue({ config, service, dao: asAddress(dao), first: first ?? 100 })),
   );
