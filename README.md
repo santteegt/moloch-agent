@@ -182,6 +182,96 @@ moloch-agent links --dao 0xf58be4395defe88ca261c2d869642c06baccec16 --proposal 1
 moloch-agent links --address 0xf58be4395defe88ca261c2d869642c06baccec16
 ```
 
+## MCP server
+
+Alongside the CLI, this package ships an MCP (Model Context Protocol) server that exposes the same `src/tx.ts`/`src/chain.ts` build/read functions as individually callable, typed tools instead of a single opaque CLI invocation. It is meant for agent frameworks (e.g. an LLM orchestrator) that want to compose on-chain operations one call at a time — summon, then wrap-eth, then approve-token, then tribute, etc. — guided by tool descriptions rather than parsing CLI stdout.
+
+**Build-only, no signing, Base mainnet only.** Every write tool (`moloch_summon`, `moloch_wrap_eth`, `moloch_submit_tribute`, `moloch_vote`, ...) returns an unsigned `{to, value, data, chainId}` transaction and never touches `PRIVATE_KEY` or any signing path — this server has no signing tool at all. This is the same boundary the CLI's `--build-only` flag already enforces (see "Boundaries" below); the MCP server extends that boundary to a new transport instead of relaxing it. Callers are responsible for signing and broadcasting the returned transaction with their own wallet infrastructure. The server only supports Base (`chainId 8453`) and refuses to start otherwise.
+
+Tools (34 total — this covers nearly all of `moloch-agent`'s CLI commands; see `docs/MCP_SERVER_SCOPE.md` for the naming convention and the handful deliberately left out and why):
+
+- **Write, build-only** (`src/tx.ts` builders): `moloch_summon`, `moloch_wrap_eth`, `moloch_unwrap_eth`, `moloch_approve_token`, `moloch_submit_tribute` (covers the CLI's tribute/join-dao/swap/token-swap aliases), `moloch_sponsor`, `moloch_vote`, `moloch_process`, `moloch_process_ready`, `moloch_cancel`, `moloch_ragequit`, `moloch_post_memory`, `moloch_submit_signal`, `moloch_update_dao_meta`, `moloch_update_gov_settings`, `moloch_update_token_settings`, `moloch_submit_custom_proposal`, `moloch_mint_shares`, `moloch_mint_loot`, `moloch_submit_payment`
+- **Read, direct/blended chain reads** (`src/chain.ts`): `moloch_read_dao`, `moloch_read_proposal`, `moloch_read_proposal_lifecycle`, `moloch_list_process_queue`, `moloch_read_balances`, `moloch_list_treasury_tokens`
+- **Read/write, hosted-service passthroughs** (`src/service.ts`'s `ServiceClient`, prefixed `moloch_service_*`): `moloch_service_get_dao`, `moloch_service_get_proposal`, `moloch_service_list_proposals`, `moloch_service_list_members`, `moloch_service_list_records`, `moloch_service_get_health`, `moloch_service_get_capabilities`, `moloch_service_pin_json`
+
+`moloch_service_pin_json` is the one exception to the "build-only, no side effects" framing above — it directly performs an HTTP write to the hosted service's IPFS pinning endpoint as soon as it's called (no chain state or wallet involved, so it doesn't touch the no-signing boundary). Its description calls this out explicitly.
+
+Amount-like inputs (`amountRaw`, `sharesRaw`, `amountsRaw`, etc.) are raw base units, matching `src/tx.ts`'s builder functions directly — no CLI-style decimal/`--amount-raw` ambiguity. Call `tools/list` (or inspect with `npx @modelcontextprotocol/inspector`) for the full input schema and description of each tool.
+
+### Run standalone
+
+```bash
+npm install
+npm run build
+node dist/mcp-server.js
+```
+
+Or during development:
+
+```bash
+npm run dev:mcp
+```
+
+The server speaks MCP over stdio and logs a one-line ready message to stderr; it uses the same environment variables as the CLI (`MOLOCH_SERVICE_URL`, `RPC_URL`, `CHAIN_ID`, `IPFS_GATEWAY_URL`). Do not set `PRIVATE_KEY` for this process — it has no use for it.
+
+### Spawn as a stdio child process
+
+An external consumer (e.g. an agent orchestrator) spawns it the same way any local MCP server is spawned — either directly:
+
+```bash
+npx -p @raidguild/meta-clawtel moloch-agent-mcp
+```
+
+or by pointing an MCP client's stdio transport at the built entry point, for example with the TypeScript SDK:
+
+```ts
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+
+const transport = new StdioClientTransport({
+  command: 'npx',
+  args: ['-p', '@raidguild/meta-clawtel', 'moloch-agent-mcp'],
+});
+```
+
+### Example tool calls
+
+`arguments` for a `tools/call` request, one from each tool category above.
+
+A build-only write tool — build (not send) a generic custom-action proposal:
+
+```json
+{
+  "name": "moloch_submit_custom_proposal",
+  "arguments": {
+    "dao": "0xf58be4395defe88ca261c2d869642c06baccec16",
+    "title": "Whitelist a new signer",
+    "actions": [{ "to": "0x00000000000000000000000000000000000abc", "data": "0x", "operation": 0 }]
+  }
+}
+```
+
+returns `{ summary: {...}, tx: { chainId: 8453, to, value, data } }` — sign and send `tx` yourself.
+
+A direct chain read:
+
+```json
+{
+  "name": "moloch_read_dao",
+  "arguments": { "dao": "0xf58be4395defe88ca261c2d869642c06baccec16" }
+}
+```
+
+A hosted-service passthrough that pins a proposal workspace document before referencing it as `link` in a write tool:
+
+```json
+{
+  "name": "moloch_service_pin_json",
+  "arguments": { "name": "proposal-workspace", "data": { "schema": "proposal-workspace/v1", "title": "..." } }
+}
+```
+
+returns `{ cid, uri, gatewayUrl }` — `uri` is what you'd pass as `link`/`workspaceURI` to a proposal-creating write tool.
+
 ## Boundaries
 
 - The hosted service handles Graph reads and Pinata uploads.
@@ -190,5 +280,6 @@ moloch-agent links --address 0xf58be4395defe88ca261c2d869642c06baccec16
 - `process-queue` and `process-ready` use direct chain state and do not rely on indexed `passed` as the execution gate.
 - `RPC_URL` defaults to `https://mainnet.base.org` so the CLI works out of the box.
 - Always-on agents should set a managed Base RPC URL for reliability.
+- The MCP server (see "MCP server" above) extends this same boundary to a new transport: it never signs, never broadcasts, and has no access to `PRIVATE_KEY`.
 
 Transaction commands sign and broadcast by default. Use `--build-only` to build unsigned summaries, and `--full` to print calldata. Signing and broadcasting require `PRIVATE_KEY`; `RPC_URL` is optional but recommended.
