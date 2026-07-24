@@ -18,6 +18,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
-- Renamed the MCP tool `moloch_proposals` to `moloch_service_proposals`,
+- Renamed the MCP tool `moloch_proposals` to `moloch_service_list_proposals`,
   for naming consistency with the other direct `ServiceClient` passthrough
   tools (`moloch_service_*`).

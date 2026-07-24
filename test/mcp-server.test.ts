@@ -78,37 +78,37 @@ test('lists all documented moloch tools', async () => {
 
   assert.deepEqual(names, [
     'moloch_approve_token',
-    'moloch_balances',
     'moloch_cancel',
-    'moloch_custom_proposal',
-    'moloch_dao_meta',
-    'moloch_gov_settings',
-    'moloch_memory_post',
+    'moloch_list_process_queue',
+    'moloch_list_treasury_tokens',
     'moloch_mint_loot',
     'moloch_mint_shares',
-    'moloch_payment',
+    'moloch_post_memory',
     'moloch_process',
-    'moloch_process_queue',
     'moloch_process_ready',
-    'moloch_proposal_lifecycle',
     'moloch_ragequit',
+    'moloch_read_balances',
     'moloch_read_dao',
     'moloch_read_proposal',
-    'moloch_service_capabilities',
-    'moloch_service_dao',
-    'moloch_service_health',
-    'moloch_service_members',
+    'moloch_read_proposal_lifecycle',
+    'moloch_service_get_capabilities',
+    'moloch_service_get_dao',
+    'moloch_service_get_health',
+    'moloch_service_get_proposal',
+    'moloch_service_list_members',
+    'moloch_service_list_proposals',
+    'moloch_service_list_records',
     'moloch_service_pin_json',
-    'moloch_service_proposal',
-    'moloch_service_proposals',
-    'moloch_service_records',
-    'moloch_signal',
     'moloch_sponsor',
+    'moloch_submit_custom_proposal',
+    'moloch_submit_payment',
+    'moloch_submit_signal',
+    'moloch_submit_tribute',
     'moloch_summon',
-    'moloch_token_settings',
-    'moloch_treasury_tokens',
-    'moloch_tribute',
     'moloch_unwrap_eth',
+    'moloch_update_dao_meta',
+    'moloch_update_gov_settings',
+    'moloch_update_token_settings',
     'moloch_vote',
     'moloch_wrap_eth',
   ]);
@@ -184,10 +184,10 @@ test('moloch_approve_token matches buildApproveTokenTx output and defaults spend
   assert.equal((result.structuredContent as typeof expected).summary.spender, '0x00768B047f73D88b6e9c14bcA97221d6E179d468');
 });
 
-test('moloch_tribute matches buildTributeTx output for identical params', async () => {
+test('moloch_submit_tribute matches buildTributeTx output for identical params', async () => {
   const { client } = await connectedClient();
   const result = await client.callTool({
-    name: 'moloch_tribute',
+    name: 'moloch_submit_tribute',
     arguments: { dao, token, amountRaw: '10', sharesRaw: '10000000000000000000000', proposalOfferingRaw: '3' },
   });
   const expected = buildTributeTx({
@@ -202,10 +202,10 @@ test('moloch_tribute matches buildTributeTx output for identical params', async 
   assert.deepEqual(result.structuredContent, expected);
 });
 
-test('moloch_tribute rejects native ETH tribute tokens the same way buildTributeTx does', async () => {
+test('moloch_submit_tribute rejects native ETH tribute tokens the same way buildTributeTx does', async () => {
   const { client } = await connectedClient();
   const result = await client.callTool({
-    name: 'moloch_tribute',
+    name: 'moloch_submit_tribute',
     arguments: { dao, token: '0x0000000000000000000000000000000000000000' },
   });
 
@@ -262,10 +262,10 @@ test('moloch_mint_loot matches buildMintLootTx output', async () => {
   assert.deepEqual(result.structuredContent, expected);
 });
 
-test('moloch_payment matches buildPaymentTx output for a native ETH payment', async () => {
+test('moloch_submit_payment matches buildPaymentTx output for a native ETH payment', async () => {
   const { client } = await connectedClient();
   const result = await client.callTool({
-    name: 'moloch_payment',
+    name: 'moloch_submit_payment',
     arguments: { dao, recipient, amountRaw: '10000000000000000' },
   });
   const expected = buildPaymentTx({ chainId: 8453, dao: dao as `0x${string}`, recipient: recipient as `0x${string}`, amount: 10000000000000000n });
@@ -273,10 +273,10 @@ test('moloch_payment matches buildPaymentTx output for a native ETH payment', as
   assert.deepEqual(result.structuredContent, expected);
 });
 
-test('moloch_payment matches buildPaymentTx output for an ERC-20 payment', async () => {
+test('moloch_submit_payment matches buildPaymentTx output for an ERC-20 payment', async () => {
   const { client } = await connectedClient();
   const result = await client.callTool({
-    name: 'moloch_payment',
+    name: 'moloch_submit_payment',
     arguments: { dao, recipient, token, amountRaw: '1500000' },
   });
   const expected = buildPaymentTx({ chainId: 8453, dao: dao as `0x${string}`, recipient: recipient as `0x${string}`, token: token as `0x${string}`, amount: 1500000n });
@@ -290,7 +290,7 @@ test('moloch_read_dao surfaces chain read errors as tool errors instead of throw
   assert.equal(result.isError, true);
 });
 
-test('moloch_service_proposals calls the injected service client with the requested dao', async () => {
+test('moloch_service_list_proposals calls the injected service client with the requested dao', async () => {
   let received: unknown;
   const service = stubServiceClient({
     proposals: async (input) => {
@@ -299,20 +299,20 @@ test('moloch_service_proposals calls the injected service client with the reques
     },
   });
   const { client } = await connectedClient(service);
-  const result = await client.callTool({ name: 'moloch_service_proposals', arguments: { dao, first: 5, skip: 2 } });
+  const result = await client.callTool({ name: 'moloch_service_list_proposals', arguments: { dao, first: 5, skip: 2 } });
 
   assert.deepEqual(received, { dao, first: 5, skip: 2 });
   assert.deepEqual(result.structuredContent, { proposals: [{ proposalId: '1' }] });
 });
 
-test('moloch_treasury_tokens surfaces service errors as tool errors', async () => {
+test('moloch_list_treasury_tokens surfaces service errors as tool errors', async () => {
   const service = stubServiceClient({
     dao: async () => {
       throw new Error('indexer unavailable');
     },
   });
   const { client } = await connectedClient(service);
-  const result = await client.callTool({ name: 'moloch_treasury_tokens', arguments: { dao } });
+  const result = await client.callTool({ name: 'moloch_list_treasury_tokens', arguments: { dao } });
 
   assert.equal(result.isError, true);
   assert.match((result.content as Array<{ text: string }>)[0].text, /indexer unavailable/);
@@ -357,7 +357,7 @@ test('moloch_ragequit rejects a non-ascending token list', async () => {
   assert.match((result.content as Array<{ text: string }>)[0].text, /sorted ascending/);
 });
 
-test('moloch_memory_post matches buildMemoryPostTx output', async () => {
+test('moloch_post_memory matches buildMemoryPostTx output', async () => {
   // buildMemoryPostTx stamps a fresh `createdAt` timestamp on every call, so
   // the raw calldata isn't deterministic across two separate invocations
   // (the tool's and this test's) — assert the stable fields instead, same
@@ -365,7 +365,7 @@ test('moloch_memory_post matches buildMemoryPostTx output', async () => {
   // test in test/tx.test.ts.
   const { client } = await connectedClient();
   const result = await client.callTool({
-    name: 'moloch_memory_post',
+    name: 'moloch_post_memory',
     arguments: { dao, type: 'vote-reason', proposalId: '12', threadId: 'proposal-12-vote-reasons', body: 'I voted no because the ask needs clearer scope.', vote: 'no', workspaceURI: 'ipfs://workspace' },
   });
   const expected = buildMemoryPostTx({
@@ -388,10 +388,10 @@ test('moloch_memory_post matches buildMemoryPostTx output', async () => {
   assert.equal(content.summary.proposalId, expected.summary.proposalId);
 });
 
-test('moloch_signal matches buildSignalTx output', async () => {
+test('moloch_submit_signal matches buildSignalTx output', async () => {
   const { client } = await connectedClient();
   const result = await client.callTool({
-    name: 'moloch_signal',
+    name: 'moloch_submit_signal',
     arguments: { dao, title: 'Signal', description: 'Body', link: 'ipfs://example' },
   });
   const expected = buildSignalTx({ chainId: 8453, dao: dao as `0x${string}`, title: 'Signal', description: 'Body', link: 'ipfs://example' });
@@ -399,14 +399,14 @@ test('moloch_signal matches buildSignalTx output', async () => {
   assert.deepEqual(result.structuredContent, expected);
 });
 
-test('moloch_dao_meta matches buildDaoMetaTx output', async () => {
+test('moloch_update_dao_meta matches buildDaoMetaTx output', async () => {
   // buildDaoMetaTx stamps a fresh `updatedAt` timestamp on every call (like
   // buildMemoryPostTx's `createdAt`), so the raw calldata isn't
   // deterministic across two separate invocations — assert the stable
   // fields instead.
   const { client } = await connectedClient();
   const result = await client.callTool({
-    name: 'moloch_dao_meta',
+    name: 'moloch_update_dao_meta',
     arguments: { dao, communityMemoryURI: 'ipfs://memory' },
   });
   const expected = buildDaoMetaTx({ chainId: 8453, dao: dao as `0x${string}`, communityMemoryURI: 'ipfs://memory' });
@@ -417,7 +417,7 @@ test('moloch_dao_meta matches buildDaoMetaTx output', async () => {
   assert.equal(content.summary.recordTable, expected.summary.recordTable);
 });
 
-test('moloch_gov_settings matches buildGovernanceSettingsTx output', async () => {
+test('moloch_update_gov_settings matches buildGovernanceSettingsTx output', async () => {
   const { client } = await connectedClient();
   const params = {
     votingPeriodInSeconds: 14400,
@@ -427,16 +427,16 @@ test('moloch_gov_settings matches buildGovernanceSettingsTx output', async () =>
     sponsorThreshold: '1000000000000000000',
     minRetention: 66,
   };
-  const result = await client.callTool({ name: 'moloch_gov_settings', arguments: { dao, params } });
+  const result = await client.callTool({ name: 'moloch_update_gov_settings', arguments: { dao, params } });
   const expected = buildGovernanceSettingsTx({ chainId: 8453, dao: dao as `0x${string}`, params });
 
   assert.deepEqual(result.structuredContent, expected);
 });
 
-test('moloch_token_settings matches buildTokenSettingsTx output', async () => {
+test('moloch_update_token_settings matches buildTokenSettingsTx output', async () => {
   const { client } = await connectedClient();
   const result = await client.callTool({
-    name: 'moloch_token_settings',
+    name: 'moloch_update_token_settings',
     arguments: { dao, pauseShares: false, pauseLoot: true },
   });
   const expected = buildTokenSettingsTx({ chainId: 8453, dao: dao as `0x${string}`, pauseShares: false, pauseLoot: true });
@@ -444,10 +444,10 @@ test('moloch_token_settings matches buildTokenSettingsTx output', async () => {
   assert.deepEqual(result.structuredContent, expected);
 });
 
-test('moloch_custom_proposal matches buildCustomProposalTx output (the gap this pass closes)', async () => {
+test('moloch_submit_custom_proposal matches buildCustomProposalTx output (the gap this pass closes)', async () => {
   const { client } = await connectedClient();
   const result = await client.callTool({
-    name: 'moloch_custom_proposal',
+    name: 'moloch_submit_custom_proposal',
     arguments: { dao, title: 'Custom action', actions: [{ to: dao }] },
   });
   const expected = buildCustomProposalTx({
@@ -468,16 +468,16 @@ test('moloch_read_proposal surfaces a config error as a tool error instead of hi
   assert.match((result.content as Array<{ text: string }>)[0].text, /RPC_URL is required/);
 });
 
-test('moloch_proposal_lifecycle surfaces a config error as a tool error instead of hitting the network', async () => {
+test('moloch_read_proposal_lifecycle surfaces a config error as a tool error instead of hitting the network', async () => {
   const { client } = await connectedClient(stubServiceClient(), { ...config, rpcUrl: undefined });
-  const result = await client.callTool({ name: 'moloch_proposal_lifecycle', arguments: { dao, proposal: 1 } });
+  const result = await client.callTool({ name: 'moloch_read_proposal_lifecycle', arguments: { dao, proposal: 1 } });
 
   assert.equal(result.isError, true);
 });
 
-test('moloch_process_queue returns an empty queue when the indexer has no candidate proposals (no network reads needed)', async () => {
+test('moloch_list_process_queue returns an empty queue when the indexer has no candidate proposals (no network reads needed)', async () => {
   const { client } = await connectedClient();
-  const result = await client.callTool({ name: 'moloch_process_queue', arguments: { dao } });
+  const result = await client.callTool({ name: 'moloch_list_process_queue', arguments: { dao } });
 
   assert.equal(result.isError, undefined);
   const content = result.structuredContent as { dao: string; queue: unknown[] };
@@ -485,15 +485,15 @@ test('moloch_process_queue returns an empty queue when the indexer has no candid
   assert.deepEqual(content.queue, []);
 });
 
-test('moloch_balances requires at least dao or address', async () => {
+test('moloch_read_balances requires at least dao or address', async () => {
   const { client } = await connectedClient();
-  const result = await client.callTool({ name: 'moloch_balances', arguments: {} });
+  const result = await client.callTool({ name: 'moloch_read_balances', arguments: {} });
 
   assert.equal(result.isError, true);
   assert.match((result.content as Array<{ text: string }>)[0].text, /Provide --address, or provide --dao/);
 });
 
-test('moloch_service_dao calls the injected service client', async () => {
+test('moloch_service_get_dao calls the injected service client', async () => {
   let received: unknown;
   const service = stubServiceClient({
     dao: async (input) => {
@@ -502,13 +502,13 @@ test('moloch_service_dao calls the injected service client', async () => {
     },
   });
   const { client } = await connectedClient(service);
-  const result = await client.callTool({ name: 'moloch_service_dao', arguments: { dao } });
+  const result = await client.callTool({ name: 'moloch_service_get_dao', arguments: { dao } });
 
   assert.deepEqual(received, { dao });
   assert.deepEqual(result.structuredContent, { dao: { safeAddress: dao } });
 });
 
-test('moloch_service_proposal calls the injected service client with a stringified proposal id', async () => {
+test('moloch_service_get_proposal calls the injected service client with a stringified proposal id', async () => {
   let received: unknown;
   const service = stubServiceClient({
     proposal: async (input) => {
@@ -517,13 +517,13 @@ test('moloch_service_proposal calls the injected service client with a stringifi
     },
   });
   const { client } = await connectedClient(service);
-  const result = await client.callTool({ name: 'moloch_service_proposal', arguments: { dao, proposal: 12 } });
+  const result = await client.callTool({ name: 'moloch_service_get_proposal', arguments: { dao, proposal: 12 } });
 
   assert.deepEqual(received, { dao, proposal: '12' });
   assert.deepEqual(result.structuredContent, { proposalId: '12' });
 });
 
-test('moloch_service_members calls the injected service client', async () => {
+test('moloch_service_list_members calls the injected service client', async () => {
   let received: unknown;
   const service = stubServiceClient({
     members: async (input) => {
@@ -532,12 +532,12 @@ test('moloch_service_members calls the injected service client', async () => {
     },
   });
   const { client } = await connectedClient(service);
-  await client.callTool({ name: 'moloch_service_members', arguments: { dao, first: 10, skip: 1 } });
+  await client.callTool({ name: 'moloch_service_list_members', arguments: { dao, first: 10, skip: 1 } });
 
   assert.deepEqual(received, { dao, first: 10, skip: 1 });
 });
 
-test('moloch_service_records calls the injected service client with default table', async () => {
+test('moloch_service_list_records calls the injected service client with default table', async () => {
   let received: unknown;
   const service = stubServiceClient({
     records: async (input) => {
@@ -546,20 +546,20 @@ test('moloch_service_records calls the injected service client with default tabl
     },
   });
   const { client } = await connectedClient(service);
-  await client.callTool({ name: 'moloch_service_records', arguments: { dao } });
+  await client.callTool({ name: 'moloch_service_list_records', arguments: { dao } });
 
   assert.deepEqual(received, { dao, table: 'communityMemory', first: 100, skip: 0 });
 });
 
-test('moloch_service_health and moloch_service_capabilities call the injected service client with no args', async () => {
+test('moloch_service_get_health and moloch_service_get_capabilities call the injected service client with no args', async () => {
   const service = stubServiceClient({
     health: async () => ({ ok: true }),
     capabilities: async () => ({ features: [] }),
   });
   const { client } = await connectedClient(service);
 
-  const health = await client.callTool({ name: 'moloch_service_health', arguments: {} });
-  const capabilities = await client.callTool({ name: 'moloch_service_capabilities', arguments: {} });
+  const health = await client.callTool({ name: 'moloch_service_get_health', arguments: {} });
+  const capabilities = await client.callTool({ name: 'moloch_service_get_capabilities', arguments: {} });
 
   assert.deepEqual(health.structuredContent, { ok: true });
   assert.deepEqual(capabilities.structuredContent, { features: [] });

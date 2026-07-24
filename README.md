@@ -186,13 +186,13 @@ moloch-agent links --address 0xf58be4395defe88ca261c2d869642c06baccec16
 
 Alongside the CLI, this package ships an MCP (Model Context Protocol) server that exposes the same `src/tx.ts`/`src/chain.ts` build/read functions as individually callable, typed tools instead of a single opaque CLI invocation. It is meant for agent frameworks (e.g. an LLM orchestrator) that want to compose on-chain operations one call at a time — summon, then wrap-eth, then approve-token, then tribute, etc. — guided by tool descriptions rather than parsing CLI stdout.
 
-**Build-only, no signing, Base mainnet only.** Every write tool (`moloch_summon`, `moloch_wrap_eth`, `moloch_tribute`, `moloch_vote`, ...) returns an unsigned `{to, value, data, chainId}` transaction and never touches `PRIVATE_KEY` or any signing path — this server has no signing tool at all. This is the same boundary the CLI's `--build-only` flag already enforces (see "Boundaries" below); the MCP server extends that boundary to a new transport instead of relaxing it. Callers are responsible for signing and broadcasting the returned transaction with their own wallet infrastructure. The server only supports Base (`chainId 8453`) and refuses to start otherwise.
+**Build-only, no signing, Base mainnet only.** Every write tool (`moloch_summon`, `moloch_wrap_eth`, `moloch_submit_tribute`, `moloch_vote`, ...) returns an unsigned `{to, value, data, chainId}` transaction and never touches `PRIVATE_KEY` or any signing path — this server has no signing tool at all. This is the same boundary the CLI's `--build-only` flag already enforces (see "Boundaries" below); the MCP server extends that boundary to a new transport instead of relaxing it. Callers are responsible for signing and broadcasting the returned transaction with their own wallet infrastructure. The server only supports Base (`chainId 8453`) and refuses to start otherwise.
 
 Tools (34 total — this covers nearly all of `moloch-agent`'s CLI commands; see `docs/MCP_SERVER_SCOPE.md` for the naming convention and the handful deliberately left out and why):
 
-- **Write, build-only** (`src/tx.ts` builders): `moloch_summon`, `moloch_wrap_eth`, `moloch_unwrap_eth`, `moloch_approve_token`, `moloch_tribute` (covers the CLI's tribute/join-dao/swap/token-swap aliases), `moloch_sponsor`, `moloch_vote`, `moloch_process`, `moloch_process_ready`, `moloch_cancel`, `moloch_ragequit`, `moloch_memory_post`, `moloch_signal`, `moloch_dao_meta`, `moloch_gov_settings`, `moloch_token_settings`, `moloch_custom_proposal`, `moloch_mint_shares`, `moloch_mint_loot`, `moloch_payment`
-- **Read, direct/blended chain reads** (`src/chain.ts`): `moloch_read_dao`, `moloch_read_proposal`, `moloch_proposal_lifecycle`, `moloch_process_queue`, `moloch_balances`, `moloch_treasury_tokens`
-- **Read/write, hosted-service passthroughs** (`src/service.ts`'s `ServiceClient`, prefixed `moloch_service_*`): `moloch_service_dao`, `moloch_service_proposal`, `moloch_service_proposals`, `moloch_service_members`, `moloch_service_records`, `moloch_service_health`, `moloch_service_capabilities`, `moloch_service_pin_json`
+- **Write, build-only** (`src/tx.ts` builders): `moloch_summon`, `moloch_wrap_eth`, `moloch_unwrap_eth`, `moloch_approve_token`, `moloch_submit_tribute` (covers the CLI's tribute/join-dao/swap/token-swap aliases), `moloch_sponsor`, `moloch_vote`, `moloch_process`, `moloch_process_ready`, `moloch_cancel`, `moloch_ragequit`, `moloch_post_memory`, `moloch_submit_signal`, `moloch_update_dao_meta`, `moloch_update_gov_settings`, `moloch_update_token_settings`, `moloch_submit_custom_proposal`, `moloch_mint_shares`, `moloch_mint_loot`, `moloch_submit_payment`
+- **Read, direct/blended chain reads** (`src/chain.ts`): `moloch_read_dao`, `moloch_read_proposal`, `moloch_read_proposal_lifecycle`, `moloch_list_process_queue`, `moloch_read_balances`, `moloch_list_treasury_tokens`
+- **Read/write, hosted-service passthroughs** (`src/service.ts`'s `ServiceClient`, prefixed `moloch_service_*`): `moloch_service_get_dao`, `moloch_service_get_proposal`, `moloch_service_list_proposals`, `moloch_service_list_members`, `moloch_service_list_records`, `moloch_service_get_health`, `moloch_service_get_capabilities`, `moloch_service_pin_json`
 
 `moloch_service_pin_json` is the one exception to the "build-only, no side effects" framing above — it directly performs an HTTP write to the hosted service's IPFS pinning endpoint as soon as it's called (no chain state or wallet involved, so it doesn't touch the no-signing boundary). Its description calls this out explicitly.
 
@@ -241,7 +241,7 @@ A build-only write tool — build (not send) a generic custom-action proposal:
 
 ```json
 {
-  "name": "moloch_custom_proposal",
+  "name": "moloch_submit_custom_proposal",
   "arguments": {
     "dao": "0xf58be4395defe88ca261c2d869642c06baccec16",
     "title": "Whitelist a new signer",

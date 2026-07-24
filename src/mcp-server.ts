@@ -184,8 +184,8 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
   // - destructiveHint: false everywhere; nothing here ever destroys state.
   // - idempotentHint: true almost everywhere (repeated calls have no
   //   additional effect, trivially, since nothing has any effect). false
-  //   for moloch_summon (random saltNonce when omitted), moloch_memory_post
-  //   (stamps createdAt), and moloch_dao_meta (stamps updatedAt) — same
+  //   for moloch_summon (random saltNonce when omitted), moloch_post_memory
+  //   (stamps createdAt), and moloch_update_dao_meta (stamps updatedAt) — same
   //   input can still produce different calldata across calls, and
   //   moloch_service_pin_json (each call creates a new pin).
   // - openWorldHint: false for pure builders with no I/O at all; true for
@@ -262,7 +262,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
   );
 
   server.registerTool(
-    'moloch_tribute',
+    'moloch_submit_tribute',
     {
       title: 'Submit a tribute (tokens-for-shares) proposal',
       description: `Builds an unsigned submitTributeProposal transaction via the DAOhaus Tribute Minion, requesting DAO voting shares and/or non-voting loot in exchange for ERC-20 tokens (this covers the CLI's tribute/join-dao/swap/token-swap aliases). Native ETH and the zero address are not supported tribute tokens; wrap ETH to WETH first. ${BUILD_ONLY_NOTE}`,
@@ -441,7 +441,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
   );
 
   server.registerTool(
-    'moloch_payment',
+    'moloch_submit_payment',
     {
       title: 'Treasury payment proposal',
       description: `Builds an unsigned submitProposal transaction that, if it passes and is processed, transfers ETH or an ERC-20 token from the DAO treasury (its Baal-owned Safe) to a recipient. ${BUILD_ONLY_NOTE}`,
@@ -491,14 +491,14 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
     'moloch_ragequit',
     {
       title: 'Ragequit (exit the DAO)',
-      description: `Builds an unsigned ragequit transaction. This is a direct member action, not a proposal: it burns the caller's shares/loot and claims proportional treasury assets to "to". Treat it as irreversible once signed and broadcast. The token list must be sorted ascending, as Baal requires — use moloch_treasury_tokens's ragequitTokensCsv as the source, or pass "ETH"/"NATIVE" for the Baal ETH sentinel. ${BUILD_ONLY_NOTE}`,
+      description: `Builds an unsigned ragequit transaction. This is a direct member action, not a proposal: it burns the caller's shares/loot and claims proportional treasury assets to "to". Treat it as irreversible once signed and broadcast. The token list must be sorted ascending, as Baal requires — use moloch_list_treasury_tokens's ragequitTokensCsv as the source, or pass "ETH"/"NATIVE" for the Baal ETH sentinel. ${BUILD_ONLY_NOTE}`,
       inputSchema: {
         dao: AddressSchema,
         to: AddressSchema.describe('Recipient of the claimed treasury assets.'),
         sharesToBurnRaw: RawUintSchema.optional().describe('Voting shares to burn, in raw 18-decimal base units. Defaults to 0.'),
         lootToBurnRaw: RawUintSchema.optional().describe('Non-voting loot to burn, in raw 18-decimal base units. Defaults to 0.'),
         tokens: z.array(z.union([AddressSchema, z.enum(['ETH', 'NATIVE'])])).min(1)
-          .describe('Treasury token list, ascending-sorted by address (Baal requirement). Get this from moloch_treasury_tokens\'s ragequitTokensCsv.'),
+          .describe('Treasury token list, ascending-sorted by address (Baal requirement). Get this from moloch_list_treasury_tokens\'s ragequitTokensCsv.'),
       },
       outputSchema: BuiltTxOutputSchema,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
@@ -514,7 +514,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
   );
 
   server.registerTool(
-    'moloch_memory_post',
+    'moloch_post_memory',
     {
       title: 'Post a community memory record',
       description: `Builds an unsigned Poster.post transaction that writes a JSON record (e.g. a thread post, vote reason, or draft) to the DAOhaus community-memory database. The sender must satisfy the DAO's database tag permissions for the record to index. ${BUILD_ONLY_NOTE}`,
@@ -563,7 +563,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
   );
 
   server.registerTool(
-    'moloch_signal',
+    'moloch_submit_signal',
     {
       title: 'Submit a signal proposal',
       description: `Builds an unsigned submitProposal transaction for a non-binding "signal" proposal (a Poster post wrapped as a Baal proposal, with no on-chain actions). ${BUILD_ONLY_NOTE}`,
@@ -592,7 +592,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
   );
 
   server.registerTool(
-    'moloch_dao_meta',
+    'moloch_update_dao_meta',
     {
       title: 'Update DAO metadata proposal',
       description: `Builds an unsigned submitProposal transaction that, if it passes and is processed, posts updated DAO profile metadata (name, description, workspace URIs, ...) via the Poster contract. ${BUILD_ONLY_NOTE}`,
@@ -633,7 +633,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
   );
 
   server.registerTool(
-    'moloch_gov_settings',
+    'moloch_update_gov_settings',
     {
       title: 'Update governance settings proposal',
       description: `Builds an unsigned submitProposal transaction that, if it passes and is processed, calls setGovernanceConfig with new voting/grace periods, offering, quorum, sponsor threshold, and minimum retention. ${BUILD_ONLY_NOTE}`,
@@ -680,7 +680,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
   );
 
   server.registerTool(
-    'moloch_token_settings',
+    'moloch_update_token_settings',
     {
       title: 'Update token settings proposal',
       description: `Builds an unsigned submitProposal transaction that, if it passes and is processed, calls setAdminConfig to pause/unpause DAO share and/or loot transfers. ${BUILD_ONLY_NOTE}`,
@@ -713,10 +713,10 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
   );
 
   server.registerTool(
-    'moloch_custom_proposal',
+    'moloch_submit_custom_proposal',
     {
       title: 'Submit a custom (generic action) proposal',
-      description: `Builds an unsigned submitProposal transaction wrapping an arbitrary list of Safe-style actions ({to, value, data, operation}) via Baal's multisend — the generic escape hatch for proposal types not covered by the other proposal tools. Use moloch_read_dao/moloch_service_proposals/etc. to inspect state and encode the calldata yourself for each action. ${BUILD_ONLY_NOTE}`,
+      description: `Builds an unsigned submitProposal transaction wrapping an arbitrary list of Safe-style actions ({to, value, data, operation}) via Baal's multisend — the generic escape hatch for proposal types not covered by the other proposal tools. Use moloch_read_dao/moloch_service_list_proposals/etc. to inspect state and encode the calldata yourself for each action. ${BUILD_ONLY_NOTE}`,
       inputSchema: {
         dao: AddressSchema,
         title: z.string().min(1),
@@ -766,8 +766,16 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
     async ({ dao }) => safeRead(() => readDaoDirect(config, asAddress(dao))),
   );
 
+  // TODO(pagination): mcp_best_practices.md wants list tools to return
+  // has_more/next_offset/total_count alongside the page. We pass first/skip
+  // straight through to the hosted service and return its response as-is;
+  // the indexer's /proposals endpoint doesn't currently expose a total
+  // count, so synthesizing that metadata here isn't possible without a
+  // separate count query against the service (out of scope for this
+  // build/read-wrapper pass — would need service.ts's proposals() to grow
+  // an optional count field, or a new count endpoint on the hosted side).
   server.registerTool(
-    'moloch_service_proposals',
+    'moloch_service_list_proposals',
     {
       title: 'List indexed DAO proposals',
       description: 'Direct passthrough to the hosted moloch-service: lists the DAO\'s proposals from the indexer (Graph), including proposalData needed for moloch_process.',
@@ -782,7 +790,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
   );
 
   server.registerTool(
-    'moloch_treasury_tokens',
+    'moloch_list_treasury_tokens',
     {
       title: 'List DAO treasury tokens',
       description: 'Resolves the DAO\'s Safe treasury address and lists its non-zero token balances, plus a ready-to-use ragequitTokensCsv (ascending-sorted token list, as Baal\'s ragequit requires).',
@@ -804,7 +812,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
   );
 
   server.registerTool(
-    'moloch_proposal_lifecycle',
+    'moloch_read_proposal_lifecycle',
     {
       title: 'Derive a proposal\'s lifecycle status',
       description: 'Blends the indexed proposal (falling back to a chain-only read if the indexer is unavailable) with direct chain status/state to derive a lifecycle summary (needsSponsor, inVoting, inGrace, processableNow, failedQuorum, ...). This is the same derivation moloch-agent\'s process-queue/process-ready use, and does not rely on indexed "passed" as the execution gate.',
@@ -814,8 +822,14 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
     async ({ dao, proposal }) => safeRead(() => proposalLifecycle({ config, service, dao: asAddress(dao), proposal })),
   );
 
+  // TODO(pagination): same gap as moloch_service_list_proposals — this
+  // scans up to `first` indexed proposals and returns the full derived
+  // queue with no has_more/next_offset/total_count. Queues are typically
+  // small (only unprocessed proposals past their grace period), so this is
+  // lower priority than the raw indexer list tools, but the same fix would
+  // apply if a DAO's queue ever grows large enough to matter.
   server.registerTool(
-    'moloch_process_queue',
+    'moloch_list_process_queue',
     {
       title: 'List processable proposals',
       description: 'Scans the DAO\'s indexed proposals and derives, via direct chain state, which ones are processable right now (queued oldest-first). Use moloch_process_ready if you only want the built transaction for the single oldest one; use this to see the full queue and each item\'s status first.',
@@ -829,7 +843,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
   );
 
   server.registerTool(
-    'moloch_balances',
+    'moloch_read_balances',
     {
       title: 'Read native/ERC-20 balances',
       description: 'Reads the native ETH balance (and, if a token is given, its ERC-20 balance) for an explicit address, or for a DAO\'s Safe treasury address when only "dao" is given. Requires at least one of "dao" or "address".',
@@ -850,7 +864,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
   );
 
   server.registerTool(
-    'moloch_service_dao',
+    'moloch_service_get_dao',
     {
       title: 'Read the indexed DAO profile',
       description: 'Direct passthrough to the hosted moloch-service: the indexed DAO document (name, safeAddress, metadata, ...) from the Graph. Distinct from moloch_read_dao, which reads counters directly from the Baal contract.',
@@ -861,7 +875,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
   );
 
   server.registerTool(
-    'moloch_service_proposal',
+    'moloch_service_get_proposal',
     {
       title: 'Read a single indexed proposal',
       description: 'Direct passthrough to the hosted moloch-service: a single proposal document from the indexer (Graph), by id.',
@@ -871,8 +885,11 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
     async ({ dao, proposal }) => safeRead(() => service.proposal({ dao, proposal: String(proposal) })),
   );
 
+  // TODO(pagination): same gap as moloch_service_list_proposals — see that
+  // TODO. Applies here too since /members has the same first/skip shape
+  // with no total count.
   server.registerTool(
-    'moloch_service_members',
+    'moloch_service_list_members',
     {
       title: 'List indexed DAO members',
       description: 'Direct passthrough to the hosted moloch-service: the DAO\'s member list from the indexer (Graph).',
@@ -886,8 +903,11 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
     async ({ dao, first, skip }) => safeRead(() => service.members({ dao, first: first ?? 100, skip: skip ?? 0 })),
   );
 
+  // TODO(pagination): same gap as moloch_service_list_proposals — see that
+  // TODO. Applies here too since /records has the same first/skip shape
+  // with no total count.
   server.registerTool(
-    'moloch_service_records',
+    'moloch_service_list_records',
     {
       title: 'List indexed community memory records',
       description: 'Direct passthrough to the hosted moloch-service: community-memory-style records (posts, votes, drafts, ...) for a DAO table from the indexer (Graph).',
@@ -903,7 +923,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
   );
 
   server.registerTool(
-    'moloch_service_health',
+    'moloch_service_get_health',
     {
       title: 'Check hosted service health',
       description: 'Direct passthrough to the hosted moloch-service\'s health endpoint.',
@@ -914,7 +934,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
   );
 
   server.registerTool(
-    'moloch_service_capabilities',
+    'moloch_service_get_capabilities',
     {
       title: 'Read hosted service capabilities',
       description: 'Direct passthrough to the hosted moloch-service\'s capabilities endpoint.',

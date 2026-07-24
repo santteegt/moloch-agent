@@ -8,14 +8,32 @@ full list of available tools.
 
 ## Naming convention
 
-- **`moloch_service_*`** — the tool body is a direct `service.<method>(...)`
-  call (a thin HTTP passthrough to the hosted moloch-service: Graph reads,
-  IPFS pinning). No `chainId`/calldata involved.
-- **`moloch_*`** — everything else: `tx.ts` builders (return
+Tool names follow `moloch[_service]_{verb}_{resource}`, per the MCP
+best-practices guidance to prefix by service and lead with an action verb
+(e.g. `github_create_issue`, not `github_issue`):
+
+- **`moloch_service_*`** prefix — the tool body is a direct
+  `service.<method>(...)` call (a thin HTTP passthrough to the hosted
+  moloch-service: Graph reads, IPFS pinning). No `chainId`/calldata
+  involved.
+- **`moloch_*`** prefix — everything else: `tx.ts` builders (return
   `{summary, tx}`, build-only, never signed) and `chain.ts` functions
   (direct contract reads, or reads that blend indexed + chain data and may
   use `service` as an internal implementation detail rather than as the
   tool's primary action).
+- **Verb**: `submit`/`post`/`update` for proposal-creating writes (e.g.
+  `moloch_submit_tribute`, `moloch_update_dao_meta`), a domain verb where
+  one already exists and reads better (`moloch_summon`, `moloch_ragequit`,
+  `moloch_cancel`, `moloch_sponsor`, `moloch_vote`, `moloch_process`, `moloch_wrap_eth`),
+  `read` for a single direct-or-blended chain read, `list` for an
+  array-returning read, and `get`/`list` (singular/plural) within
+  `moloch_service_*` for the same reason.
+
+A few tools intentionally don't fit that pattern in an obvious way:
+`moloch_process_ready` (verb `process`, object "the ready [proposal]") and
+`moloch_service_pin_json` (verb `pin`, a one-off action rather than a
+get/list/read/submit) — both still lead with a verb, just not one of the
+repeated ones above.
 
 ## Deliberately excluded
 
@@ -62,7 +80,7 @@ rather than an oversight:
 
 - **`vote` with `--reason`** (the CLI's `voteWithOptionalReason`, which
   posts a memory record and then votes in one invocation) — not exposed as
-  a distinct combo tool. Now that `moloch_memory_post` and `moloch_vote`
+  a distinct combo tool. Now that `moloch_post_memory` and `moloch_vote`
   both exist as separate tools, the calling agent can compose them itself
   in two calls, which is exactly the "agent composes individual operations
   instead of a hidden multi-step function" model this server was built
