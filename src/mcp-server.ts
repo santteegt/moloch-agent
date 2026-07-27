@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { realpathSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
@@ -961,12 +963,24 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
   return server;
 }
 
-const isMain = (() => {
-  const entry = process.argv[1];
-  return Boolean(entry) && import.meta.url === `file://${entry}`;
-})();
+// npm always installs bin entries (moloch-agent-mcp) as symlinks into
+// node_modules/.bin. import.meta.url resolves through symlinks to the
+// package's real file path, but process.argv[1] does not — it's the literal
+// (symlinked) path the process was invoked with. Comparing them directly
+// (as `import.meta.url === \`file://${process.argv[1]}\``) therefore always
+// evaluates to false for anyone running the published bin, silently
+// skipping main() and exiting with no output. Resolve argv[1]'s real path
+// first so the comparison holds for both direct and symlinked invocation.
+export function isMainModule(argv1: string | undefined, metaUrl: string): boolean {
+  if (!argv1) return false;
+  try {
+    return metaUrl === pathToFileURL(realpathSync(argv1)).href;
+  } catch {
+    return false;
+  }
+}
 
-if (isMain) {
+if (isMainModule(process.argv[1], import.meta.url)) {
   main().catch((error) => {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`${message}\n`);

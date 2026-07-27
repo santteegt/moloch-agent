@@ -1,8 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, symlinkSync, writeFileSync, realpathSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
-import { createServer } from '../src/mcp-server.js';
+import { createServer, isMainModule } from '../src/mcp-server.js';
 import {
   BAAL_ETH_TOKEN,
   BASE_WETH,
@@ -578,4 +582,42 @@ test('moloch_service_pin_json calls the injected service client and is not build
 
   assert.deepEqual(received, { name: 'test', data: { hello: 'world' } });
   assert.deepEqual(result.structuredContent, { cid: 'bafy...', uri: 'ipfs://bafy...', gatewayUrl: 'https://gateway.test/ipfs/bafy...' });
+});
+
+// Regression coverage for the npm-published bin entry never starting:
+// node_modules/.bin/moloch-agent-mcp is always a symlink, and
+// import.meta.url resolves through symlinks while process.argv[1] does not,
+// so a naive `import.meta.url === \`file://${argv1}\`` check silently never
+// matches for anyone running the installed package.
+test('isMainModule matches when argv[1] is a symlink to the built module (the real npm bin scenario)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'moloch-agent-mcp-isMain-'));
+  const realFile = join(dir, 'mcp-server.js');
+  writeFileSync(realFile, '// dummy module for isMainModule symlink test\n');
+  const metaUrl = pathToFileURL(realpathSync(realFile)).href;
+
+  const binSymlink = join(dir, 'moloch-agent-mcp');
+  symlinkSync(realFile, binSymlink);
+
+  assert.equal(isMainModule(binSymlink, metaUrl), true);
+});
+
+test('isMainModule matches on direct (non-symlinked) invocation', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'moloch-agent-mcp-isMain-'));
+  const realFile = join(dir, 'mcp-server.js');
+  writeFileSync(realFile, '// dummy module for isMainModule direct test\n');
+  const metaUrl = pathToFileURL(realpathSync(realFile)).href;
+
+  assert.equal(isMainModule(realFile, metaUrl), true);
+});
+
+test('isMainModule returns false for an unrelated path or a missing argv[1]', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'moloch-agent-mcp-isMain-'));
+  const realFile = join(dir, 'mcp-server.js');
+  const otherFile = join(dir, 'not-the-entry.js');
+  writeFileSync(realFile, '// dummy module\n');
+  writeFileSync(otherFile, '// a different module\n');
+  const metaUrl = pathToFileURL(realpathSync(realFile)).href;
+
+  assert.equal(isMainModule(otherFile, metaUrl), false);
+  assert.equal(isMainModule(undefined, metaUrl), false);
 });
