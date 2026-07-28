@@ -11,20 +11,13 @@ import {
   type Hex,
 } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
-import { base } from 'viem/chains';
 import type { Config } from './config.js';
+import { getNetwork, getViemChain } from './networks.js';
 
-export const POSTER = '0x000000000000cd17345801aa8147b8D3950260FF';
+// Protocol-level sentinels, not per-chain deployments — kept as plain constants.
+// Per-chain deployment addresses and Poster tags live in ./networks.js.
 export const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
-export const TRIBUTE_MINION = '0x00768B047f73D88b6e9c14bcA97221d6E179d468';
-export const GNOSIS_MULTISEND = '0x998739BFdAAdde7C933B942a68053933098f9EDa';
-export const SUMMONER = '0x97Aaa5be8B38795245f1c38A883B44cccdfB3E11';
-export const BASE_WETH = '0x4200000000000000000000000000000000000006';
 export const BAAL_ETH_TOKEN = '0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE';
-export const POSTER_TAG_DAO_DB = 'daohaus.proposal.database';
-export const POSTER_TAG_MEMBER_DB = 'daohaus.member.database';
-export const POSTER_TAG_DAO_PROFILE_UPDATE = 'daohaus.shares.daoProfile';
-export const POSTER_TAG_SUMMONER = 'daohaus.summoner.daoProfile';
 export const BAAL_TOKEN_DECIMALS = 18;
 
 export const BAAL_ABI = [
@@ -53,8 +46,12 @@ export const POSTER_ABI = [
   { type: 'function', name: 'post', stateMutability: 'nonpayable', inputs: [{ name: 'content', type: 'string' }, { name: 'tag', type: 'string' }], outputs: [] },
 ] as const;
 
-const MULTISEND_ABI = [
+export const MULTISEND_ABI = [
   { type: 'function', name: 'multiSend', stateMutability: 'payable', inputs: [{ name: 'transactions', type: 'bytes' }], outputs: [] },
+] as const;
+
+export const GNOSIS_MODULE_ABI = [
+  { type: 'function', name: 'execTransactionFromModule', stateMutability: 'nonpayable', inputs: [{ name: 'to', type: 'address' }, { name: 'value', type: 'uint256' }, { name: 'data', type: 'bytes' }, { name: 'operation', type: 'uint8' }], outputs: [{ type: 'bool' }] },
 ] as const;
 
 const TRIBUTE_MINION_ABI = [
@@ -171,7 +168,7 @@ export type CustomProposalAction = {
 };
 
 export function buildWrapEthTx(input: { chainId: number; amount: bigint; weth?: `0x${string}` }): BuiltTx {
-  const weth = input.weth || BASE_WETH;
+  const weth = input.weth || getNetwork(input.chainId).contracts.WETH;
   const data = encodeFunctionData({ abi: WETH_ABI, functionName: 'deposit' });
   return withSummary(tx(input.chainId, weth, data, input.amount), {
     action: 'wrap-eth',
@@ -182,7 +179,7 @@ export function buildWrapEthTx(input: { chainId: number; amount: bigint; weth?: 
 }
 
 export function buildUnwrapEthTx(input: { chainId: number; amount: bigint; weth?: `0x${string}` }): BuiltTx {
-  const weth = input.weth || BASE_WETH;
+  const weth = input.weth || getNetwork(input.chainId).contracts.WETH;
   const data = encodeFunctionData({ abi: WETH_ABI, functionName: 'withdraw', args: [input.amount] });
   return withSummary(tx(input.chainId, weth, data), {
     action: 'unwrap-eth',
@@ -193,7 +190,7 @@ export function buildUnwrapEthTx(input: { chainId: number; amount: bigint; weth?
 }
 
 export function buildApproveTokenTx(input: { chainId: number; token: `0x${string}`; spender?: `0x${string}`; amount: bigint }): BuiltTx {
-  const spender = input.spender || TRIBUTE_MINION;
+  const spender = input.spender || getNetwork(input.chainId).contracts.TRIBUTE_MINION;
   const data = encodeFunctionData({ abi: ERC20_APPROVE_ABI, functionName: 'approve', args: [spender, input.amount] });
   return withSummary(tx(input.chainId, input.token, data), {
     action: 'approve-token',
@@ -324,13 +321,14 @@ export function buildMemoryPostTx(input: {
     version: input.version,
     createdAt: new Date().toISOString(),
   });
-  const tag = input.tag || POSTER_TAG_MEMBER_DB;
+  const network = getNetwork(input.chainId);
+  const tag = input.tag || network.tags.MEMBER_DB;
   const data = encodeFunctionData({
     abi: POSTER_ABI,
     functionName: 'post',
     args: [JSON.stringify(content), tag],
   });
-  return withSummary(tx(input.chainId, POSTER, data), {
+  return withSummary(tx(input.chainId, network.contracts.POSTER, data), {
     action: 'memory-post',
     dao: input.dao,
     recordTable: input.table,
@@ -353,6 +351,7 @@ export function buildSignalTx(input: {
   baalGas?: bigint;
   proposalOffering?: bigint;
 }): BuiltTx {
+  const network = getNetwork(input.chainId);
   const postData = encodeFunctionData({
     abi: POSTER_ABI,
     functionName: 'post',
@@ -365,13 +364,13 @@ export function buildSignalTx(input: {
         description: input.description,
         link: input.link || '',
       }),
-      POSTER_TAG_DAO_DB,
+      network.tags.DAO_DB,
     ],
   });
   return buildProposalTx({
     chainId: input.chainId,
     dao: input.dao,
-    actions: [{ to: POSTER, value: 0n, data: postData, operation: 0 }],
+    actions: [{ to: network.contracts.POSTER, value: 0n, data: postData, operation: 0 }],
     title: input.title,
     description: input.description,
     link: input.link,
@@ -384,6 +383,69 @@ export function buildSignalTx(input: {
       proposalKind: 'SIGNAL',
       dao: input.dao,
       title: input.title,
+      contentURI: input.link || '',
+    },
+  });
+}
+
+export function buildDaoRecordTx(input: {
+  chainId: number;
+  dao: `0x${string}`;
+  table?: string;
+  tag?: string;
+  title?: string;
+  description?: string;
+  link?: string;
+  name?: string;
+  daoDescription?: string;
+  communityMemoryURI?: string;
+  proposalWorkspaceURI?: string;
+  sharedStateURI?: string;
+  web?: string;
+  content?: Record<string, unknown>;
+  expiration?: number;
+  baalGas?: bigint;
+  proposalOffering?: bigint;
+}): BuiltTx {
+  const network = getNetwork(input.chainId);
+  const table = input.table || 'daoProfile';
+  const content = compactObject({
+    name: input.name,
+    description: input.daoDescription,
+    communityMemoryURI: input.communityMemoryURI,
+    proposalWorkspaceURI: input.proposalWorkspaceURI,
+    sharedStateURI: input.sharedStateURI,
+    web: input.web,
+    ...input.content,
+    // Protected envelope fields — cannot be overridden by an arbitrary --content payload.
+    daoId: input.dao,
+    table,
+    queryType: 'list',
+    updatedAt: new Date().toISOString(),
+  });
+  const tag = input.tag || network.tags.DAO_PROFILE_UPDATE;
+  const postData = encodeFunctionData({
+    abi: POSTER_ABI,
+    functionName: 'post',
+    args: [JSON.stringify(content), tag],
+  });
+  return buildProposalTx({
+    chainId: input.chainId,
+    dao: input.dao,
+    actions: [{ to: network.contracts.POSTER, value: 0n, data: postData, operation: 0 }],
+    title: input.title || (table === 'daoProfile' ? 'Update DAO metadata' : `Update ${table} record`),
+    description: input.description || '',
+    link: input.link,
+    proposalType: 'UPDATE_METADATA_SETTINGS',
+    expiration: input.expiration,
+    baalGas: input.baalGas,
+    value: input.proposalOffering,
+    summary: {
+      action: 'submitProposal',
+      proposalKind: 'UPDATE_METADATA_SETTINGS',
+      dao: input.dao,
+      recordTable: table,
+      tag,
       contentURI: input.link || '',
     },
   });
@@ -405,42 +467,7 @@ export function buildDaoMetaTx(input: {
   baalGas?: bigint;
   proposalOffering?: bigint;
 }): BuiltTx {
-  const content = compactObject({
-    daoId: input.dao,
-    table: 'daoProfile',
-    queryType: 'list',
-    name: input.name,
-    description: input.daoDescription,
-    communityMemoryURI: input.communityMemoryURI,
-    proposalWorkspaceURI: input.proposalWorkspaceURI,
-    sharedStateURI: input.sharedStateURI,
-    web: input.web,
-    updatedAt: new Date().toISOString(),
-  });
-  const postData = encodeFunctionData({
-    abi: POSTER_ABI,
-    functionName: 'post',
-    args: [JSON.stringify(content), POSTER_TAG_DAO_PROFILE_UPDATE],
-  });
-  return buildProposalTx({
-    chainId: input.chainId,
-    dao: input.dao,
-    actions: [{ to: POSTER, value: 0n, data: postData, operation: 0 }],
-    title: input.title || 'Update DAO metadata',
-    description: input.description || '',
-    link: input.link,
-    proposalType: 'UPDATE_METADATA_SETTINGS',
-    expiration: input.expiration,
-    baalGas: input.baalGas,
-    value: input.proposalOffering,
-    summary: {
-      action: 'submitProposal',
-      proposalKind: 'UPDATE_METADATA_SETTINGS',
-      dao: input.dao,
-      recordTable: 'daoProfile',
-      contentURI: input.link || '',
-    },
-  });
+  return buildDaoRecordTx({ ...input, table: 'daoProfile' });
 }
 
 export function buildTributeTx(input: {
@@ -473,7 +500,7 @@ export function buildTributeTx(input: {
     functionName: 'submitTributeProposal',
     args: [input.dao, token, amount, shares, loot, input.expiration || 0, input.baalGas || 0n, details({ title, description, link, proposalType: 'TOKENS_FOR_SHARES' })],
   });
-  return withSummary(tx(input.chainId, TRIBUTE_MINION, data, value), {
+  return withSummary(tx(input.chainId, getNetwork(input.chainId).contracts.TRIBUTE_MINION, data, value), {
     action: 'submitTributeProposal',
     dao: input.dao,
     proposalKind: 'TOKENS_FOR_SHARES',
@@ -781,15 +808,16 @@ export function buildSummonTx(input: {
     functionName: 'setShamans',
     args: [params.shamanAddresses, params.shamanPermissions],
   });
+  const network = getNetwork(input.chainId);
   const metadataPost = encodeFunctionData({
     abi: POSTER_ABI,
     functionName: 'post',
-    args: [JSON.stringify(summonProfile(params)), POSTER_TAG_SUMMONER],
+    args: [JSON.stringify(summonProfile(params)), network.tags.SUMMONER],
   });
   const metadataTx = encodeFunctionData({
     abi: BAAL_ABI,
     functionName: 'executeAsBaal',
-    args: [POSTER, 0n, metadataPost],
+    args: [network.contracts.POSTER, 0n, metadataPost],
   });
   const saltNonce = params.saltNonce || BigInt(`0x${crypto.randomBytes(16).toString('hex')}`);
   const data = encodeFunctionData({
@@ -797,7 +825,7 @@ export function buildSummonTx(input: {
     functionName: 'summonBaalFromReferrer',
     args: [params.safeAddress || ZERO_ADDRESS, ZERO_ADDRESS, saltNonce, mint, tokens, [govTx, shamanTx, metadataTx]],
   });
-  return withSummary(tx(input.chainId, SUMMONER, data), {
+  return withSummary(tx(input.chainId, network.contracts.SUMMONER, data), {
     action: 'summonBaalFromReferrer',
     proposalKind: 'SUMMON',
     submissionTarget: 'V3_FACTORY_ADV_TOKEN',
@@ -1008,11 +1036,11 @@ export async function maybeSend(config: Config, built: BuiltTx, send: boolean, o
   if (!send) return built;
   if (!config.rpcUrl) throw new Error('RPC_URL is required for --send.');
   if (!config.privateKey) throw new Error('PRIVATE_KEY is required for --send.');
-  if (config.chainId !== 8453) throw new Error('Only Base chainId 8453 is currently supported for --send.');
+  const viemChain = getViemChain(config.chainId);
 
   const account = privateKeyToAccount(config.privateKey);
-  const publicClient = createPublicClient({ chain: base, transport: http(config.rpcUrl) });
-  const walletClient = createWalletClient({ account, chain: base, transport: http(config.rpcUrl) });
+  const publicClient = createPublicClient({ chain: viemChain, transport: http(config.rpcUrl) });
+  const walletClient = createWalletClient({ account, chain: viemChain, transport: http(config.rpcUrl) });
   const request = await publicClient.prepareTransactionRequest({
     account,
     to: built.tx.to,

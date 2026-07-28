@@ -87,8 +87,10 @@ moloch-agent read-dao --dao 0xDAO
 moloch-agent balances --dao 0xDAO
 moloch-agent balances --address 0xADDRESS --token 0xERC20
 moloch-agent treasury-tokens --dao 0xDAO
+moloch-agent dao-history --dao 0xDAO
 moloch-agent read-proposal --dao 0xDAO --proposal 1
 moloch-agent proposal-lifecycle --dao 0xDAO --proposal 1
+moloch-agent decode-proposal --dao 0xDAO --proposal 1
 moloch-agent process-queue --dao 0xDAO
 moloch-agent wrap-eth --amount 0.01
 moloch-agent approve-token --token 0xERC20 --amount 1000000
@@ -102,6 +104,7 @@ moloch-agent summon --params summon.json
 moloch-agent memory-post --dao 0xDAO --thread-id proposal-1 --body "Reason for vote"
 moloch-agent signal --dao 0xDAO --title "Signal" --description "Body"
 moloch-agent dao-meta --dao 0xDAO --community-memory-uri ipfs://...
+moloch-agent dao-record --dao 0xDAO --table charter --content-file charter.json
 moloch-agent gov-settings --dao 0xDAO --params gov-settings.json
 moloch-agent token-settings --dao 0xDAO --pause-shares false --pause-loot false
 moloch-agent custom-proposal --dao 0xDAO --title "Custom action" --actions actions.json
@@ -117,6 +120,7 @@ moloch-agent vote --dao 0xDAO --proposal 1 --approved true --reason "Aligned wit
 moloch-agent cancel --dao 0xDAO --proposal 1
 moloch-agent process --dao 0xDAO --proposal 1 --proposal-data 0x...
 moloch-agent process-ready --dao 0xDAO
+moloch-agent estimate-baal-gas --dao 0xDAO --proposal-data 0x...
 ```
 
 Minimal summon params:
@@ -156,7 +160,17 @@ Agents should normally omit `--link` and `--content-uri` so the CLI can create t
 
 `custom-proposal` is the generic Baal proposal escape hatch. Pass an actions JSON array like `[{"to":"0x...","value":"0","data":"0x...","operation":0}]`.
 
+`dao-record` posts to an arbitrary Poster table (`--table`, default `daoProfile`) via a proposal — `--content-file` is a JSON object merged into the posted record. `dao-meta` is a thin wrapper over `dao-record` for the `daoProfile` table specifically, kept for its named metadata flags (`--name`, `--community-memory-uri`, ...).
+
+`decode-proposal` decodes `submitProposal` or multisend calldata into named actions — Poster posts are parsed as JSON, other Baal calls are decoded by function name and args, unrecognized calls fall back to their 4-byte selector. Pass `--data` directly (e.g. this CLI's own `--build-only` output's `tx.data`), or `--dao`/`--proposal` to fetch `proposalData` from the indexer. The Baal contract itself only stores a hash, not the calldata, so the `--dao`/`--proposal` path requires the indexer to have it.
+
+`dao-history` composes the indexed DAO profile with its proposal history in one call (two indexer requests under the hood; the hosted service has no combined endpoint).
+
 Proposal commands read the DAO `proposalOffering` and include it as transaction value unless `--value` or `--proposal-offering` is provided.
+
+Proposal-submitting commands accept `--estimate-baal-gas` to simulate the built multisend through the DAO's Safe module and size `baalGas` accordingly, instead of the default `0`. `--baal-gas-buffer` (default `1.2`) multiplies the raw estimate; `--require-baal-gas-estimate` errors instead of silently falling back to `0` if estimation fails (e.g. the DAO Safe address can't be resolved). Ignored if `--baal-gas` is already explicit. `estimate-baal-gas` runs the same estimation as a standalone command against an already-built proposal's `summary.proposalData`.
+
+`process` runs a preflight before broadcasting — confirms the proposal is processable now, not already processed, and (when `--proposal-data` is supplied) that it matches what the indexer has — and, unless `--gas-limit`/`--process-gas-limit` is set, applies the preflight's computed gas limit. Pass `--skip-preflight` to bypass; `--build-only` always skips it.
 
 `tribute`, `join-dao`, `swap`, and `token-swap` all use the DAOhaus Tribute Minion path for requesting voting shares and/or non-voting loot in exchange for ERC-20 tokens. Native ETH and zero-address token tribute are not supported by the DAOhaus Tribute Minion. `--amount` is raw ERC-20 token units.
 
@@ -188,13 +202,15 @@ Alongside the CLI, this package ships an MCP (Model Context Protocol) server tha
 
 **Build-only, no signing, Base mainnet only.** Every write tool (`moloch_summon`, `moloch_wrap_eth`, `moloch_submit_tribute`, `moloch_vote`, ...) returns an unsigned `{to, value, data, chainId}` transaction and never touches `PRIVATE_KEY` or any signing path — this server has no signing tool at all. This is the same boundary the CLI's `--build-only` flag already enforces (see "Boundaries" below); the MCP server extends that boundary to a new transport instead of relaxing it. Callers are responsible for signing and broadcasting the returned transaction with their own wallet infrastructure. The server only supports Base (`chainId 8453`) and refuses to start otherwise.
 
-Tools (34 total — this covers nearly all of `moloch-agent`'s CLI commands; see `docs/MCP_SERVER_SCOPE.md` for the naming convention and the handful deliberately left out and why):
+Tools (39 total — this covers nearly all of `moloch-agent`'s CLI commands; see `docs/MCP_SERVER_SCOPE.md` for the naming convention and the handful deliberately left out and why):
 
-- **Write, build-only** (`src/tx.ts` builders): `moloch_summon`, `moloch_wrap_eth`, `moloch_unwrap_eth`, `moloch_approve_token`, `moloch_submit_tribute` (covers the CLI's tribute/join-dao/swap/token-swap aliases), `moloch_sponsor`, `moloch_vote`, `moloch_process`, `moloch_process_ready`, `moloch_cancel`, `moloch_ragequit`, `moloch_post_memory`, `moloch_submit_signal`, `moloch_update_dao_meta`, `moloch_update_gov_settings`, `moloch_update_token_settings`, `moloch_submit_custom_proposal`, `moloch_mint_shares`, `moloch_mint_loot`, `moloch_submit_payment`
-- **Read, direct/blended chain reads** (`src/chain.ts`): `moloch_read_dao`, `moloch_read_proposal`, `moloch_read_proposal_lifecycle`, `moloch_list_process_queue`, `moloch_read_balances`, `moloch_list_treasury_tokens`
+- **Write, build-only** (`src/tx.ts` builders): `moloch_summon`, `moloch_wrap_eth`, `moloch_unwrap_eth`, `moloch_approve_token`, `moloch_submit_tribute` (covers the CLI's tribute/join-dao/swap/token-swap aliases), `moloch_sponsor`, `moloch_vote`, `moloch_process`, `moloch_process_ready`, `moloch_cancel`, `moloch_ragequit`, `moloch_post_memory`, `moloch_submit_signal`, `moloch_update_dao_meta`, `moloch_submit_dao_record` (generalizes `moloch_update_dao_meta` to an arbitrary Poster table), `moloch_update_gov_settings`, `moloch_update_token_settings`, `moloch_submit_custom_proposal`, `moloch_mint_shares`, `moloch_mint_loot`, `moloch_submit_payment`
+- **Read, direct/blended chain reads** (`src/chain.ts`): `moloch_read_dao`, `moloch_read_dao_history`, `moloch_read_proposal`, `moloch_read_proposal_lifecycle`, `moloch_preflight_process`, `moloch_decode_proposal`, `moloch_estimate_baal_gas`, `moloch_list_process_queue`, `moloch_read_balances`, `moloch_list_treasury_tokens`
 - **Read/write, hosted-service passthroughs** (`src/service.ts`'s `ServiceClient`, prefixed `moloch_service_*`): `moloch_service_get_dao`, `moloch_service_get_proposal`, `moloch_service_list_proposals`, `moloch_service_list_members`, `moloch_service_list_records`, `moloch_service_get_health`, `moloch_service_get_capabilities`, `moloch_service_pin_json`
 
 `moloch_service_pin_json` is the one exception to the "build-only, no side effects" framing above — it directly performs an HTTP write to the hosted service's IPFS pinning endpoint as soon as it's called (no chain state or wallet involved, so it doesn't touch the no-signing boundary). Its description calls this out explicitly.
+
+Every write tool that accepts `proposalOfferingRaw` also accepts an `autoFetchProposalOffering` boolean: when true and no explicit raw offering is given, it reads the DAO's current `proposalOffering` from chain (same resolver the CLI already uses) instead of defaulting to `0`. `moloch_preflight_process` and `moloch_decode_proposal` exist specifically to verify a proposal before broadcasting it: the former reproduces the same processableNow/already-processed/proposalData-match checks the CLI's `process` command runs before sending, and the latter decodes a proposal's calldata into named actions (Poster posts parsed as JSON) instead of asking the caller to trust the raw hex. `moloch_estimate_baal_gas` is offered for completeness — it's genuinely useful only in CLI-style flows, since this server's own write tools default `baalGas` to `0` and expect the caller's smart account or relayer to size execution gas.
 
 Amount-like inputs (`amountRaw`, `sharesRaw`, `amountsRaw`, etc.) are raw base units, matching `src/tx.ts`'s builder functions directly — no CLI-style decimal/`--amount-raw` ambiguity. Call `tools/list` (or inspect with `npx @modelcontextprotocol/inspector`) for the full input schema and description of each tool.
 
@@ -278,6 +294,8 @@ returns `{ cid, uri, gatewayUrl }` — `uri` is what you'd pass as `link`/`works
 - The CLI owns local signing commands.
 - The service must never receive private keys.
 - `process-queue` and `process-ready` use direct chain state and do not rely on indexed `passed` as the execution gate.
+- `process` runs a preflight (processableNow, not already processed, `--proposal-data` matches the indexer) before broadcasting; `--skip-preflight` bypasses it.
+- Contract addresses and Poster tags are resolved per-chain from `src/networks.ts`; an unsupported `CHAIN_ID` fails immediately at startup, for both the CLI and the MCP server, including under `--build-only`.
 - `RPC_URL` defaults to `https://mainnet.base.org` so the CLI works out of the box.
 - Always-on agents should set a managed Base RPC URL for reliability.
 - The MCP server (see "MCP server" above) extends this same boundary to a new transport: it never signs, never broadcasts, and has no access to `PRIVATE_KEY`.

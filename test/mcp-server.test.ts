@@ -7,13 +7,14 @@ import { pathToFileURL } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createServer, isMainModule } from '../src/mcp-server.js';
+import { getNetwork } from '../src/networks.js';
 import {
   BAAL_ETH_TOKEN,
-  BASE_WETH,
   buildApproveTokenTx,
   buildCancelTx,
   buildCustomProposalTx,
   buildDaoMetaTx,
+  buildDaoRecordTx,
   buildGovernanceSettingsTx,
   buildMemoryPostTx,
   buildMintLootTx,
@@ -36,6 +37,7 @@ import type { ServiceClient } from '../src/service.js';
 const dao = '0x0000000000000000000000000000000000000001';
 const token = '0x0000000000000000000000000000000000000002';
 const recipient = '0x0000000000000000000000000000000000000003';
+const BASE_WETH = getNetwork(8453).contracts.WETH;
 
 const config: Config = {
   serviceUrl: 'https://example.test',
@@ -71,7 +73,7 @@ async function connectedClient(service: ServiceClient = stubServiceClient(), ser
 test('createServer rejects a non-Base chainId', () => {
   assert.throws(
     () => createServer({ ...config, chainId: 1 }, stubServiceClient()),
-    /Base mainnet \(chainId 8453\)/,
+    /Chain ID 1 is not supported/,
   );
 });
 
@@ -83,16 +85,20 @@ test('lists all documented moloch tools', async () => {
   assert.deepEqual(names, [
     'moloch_approve_token',
     'moloch_cancel',
+    'moloch_decode_proposal',
+    'moloch_estimate_baal_gas',
     'moloch_list_process_queue',
     'moloch_list_treasury_tokens',
     'moloch_mint_loot',
     'moloch_mint_shares',
     'moloch_post_memory',
+    'moloch_preflight_process',
     'moloch_process',
     'moloch_process_ready',
     'moloch_ragequit',
     'moloch_read_balances',
     'moloch_read_dao',
+    'moloch_read_dao_history',
     'moloch_read_proposal',
     'moloch_read_proposal_lifecycle',
     'moloch_service_get_capabilities',
@@ -105,6 +111,7 @@ test('lists all documented moloch tools', async () => {
     'moloch_service_pin_json',
     'moloch_sponsor',
     'moloch_submit_custom_proposal',
+    'moloch_submit_dao_record',
     'moloch_submit_payment',
     'moloch_submit_signal',
     'moloch_submit_tribute',
@@ -330,6 +337,73 @@ test('moloch_cancel matches buildCancelTx output', async () => {
   assert.deepEqual(result.structuredContent, expected);
 });
 
+test('moloch_decode_proposal decodes a submitProposal envelope built by this same server', async () => {
+  const built = buildSignalTx({ chainId: 8453, dao: dao as `0x${string}`, title: 'Signal', description: 'Body' });
+  const { client } = await connectedClient();
+
+  const result = await client.callTool({ name: 'moloch_decode_proposal', arguments: { data: built.tx.data } });
+  const content = result.structuredContent as { source: string; actions: Array<{ decoded: { contract?: string } }> };
+
+  assert.equal(content.source, 'submitProposal');
+  assert.equal(content.actions[0].decoded.contract, 'Poster');
+});
+
+test('moloch_decode_proposal fetches proposalData from the service when only dao/proposal are given', async () => {
+  const built = buildSignalTx({ chainId: 8453, dao: dao as `0x${string}`, title: 'Signal', description: 'Body' });
+  const service = stubServiceClient({
+    proposal: async () => ({ proposal: { proposalId: '7', proposalData: built.summary.proposalData } }),
+  });
+  const { client } = await connectedClient(service);
+
+  const result = await client.callTool({ name: 'moloch_decode_proposal', arguments: { dao, proposal: 7 } });
+  const content = result.structuredContent as { source: string };
+
+  assert.equal(content.source, 'multiSend');
+});
+
+test('moloch_preflight_process reports why a proposal still in voting is not processable, without RPC', async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const service = stubServiceClient({
+    proposal: async () => ({
+      proposal: {
+        proposalId: '2',
+        sponsored: true,
+        cancelled: false,
+        processed: false,
+        passed: false,
+        actionFailed: false,
+        votingStarts: now - 100,
+        votingEnds: now + 1000,
+        graceEnds: now + 2000,
+        yesBalance: '10',
+        noBalance: '0',
+        proposalData: '0x',
+        dao: { totalShares: '100', quorumPercent: '20' },
+      },
+    }),
+  });
+  const { client } = await connectedClient(service, { ...config, rpcUrl: undefined });
+
+  const result = await client.callTool({ name: 'moloch_preflight_process', arguments: { dao, proposal: 2 } });
+  const content = result.structuredContent as { ok: boolean; status: string };
+
+  assert.equal(content.ok, false);
+  assert.equal(content.status, 'voting');
+});
+
+test('moloch_estimate_baal_gas surfaces the Safe-address resolution error as a tool error instead of throwing', async () => {
+  const service = stubServiceClient({ dao: async () => ({}) });
+  const { client } = await connectedClient(service, { ...config, rpcUrl: undefined });
+
+  const result = await client.callTool({
+    name: 'moloch_estimate_baal_gas',
+    arguments: { dao, proposalData: '0x1234' },
+  });
+
+  assert.equal(result.isError, true);
+  assert.match((result.content as Array<{ text: string }>)[0].text, /Could not resolve DAO Safe address/);
+});
+
 test('moloch_ragequit matches buildRagequitTx output and resolves the ETH sentinel alias', async () => {
   const { client } = await connectedClient();
   const result = await client.callTool({
@@ -419,6 +493,51 @@ test('moloch_update_dao_meta matches buildDaoMetaTx output', async () => {
   assert.equal(content.tx.to, expected.tx.to);
   assert.equal(content.summary.proposalKind, expected.summary.proposalKind);
   assert.equal(content.summary.recordTable, expected.summary.recordTable);
+});
+
+test('moloch_submit_dao_record matches buildDaoRecordTx output for a non-daoProfile table', async () => {
+  const { client } = await connectedClient();
+  const result = await client.callTool({
+    name: 'moloch_submit_dao_record',
+    arguments: { dao, table: 'charter', tag: 'custom.tag', content: { body: 'We govern by rough consensus.' } },
+  });
+  const expected = buildDaoRecordTx({
+    chainId: 8453,
+    dao: dao as `0x${string}`,
+    table: 'charter',
+    tag: 'custom.tag',
+    content: { body: 'We govern by rough consensus.' },
+  });
+  const content = result.structuredContent as typeof expected;
+
+  assert.equal(content.tx.to, expected.tx.to);
+  assert.equal(content.summary.proposalKind, expected.summary.proposalKind);
+  assert.equal(content.summary.recordTable, 'charter');
+  assert.equal(content.summary.tag, 'custom.tag');
+});
+
+test('moloch_submit_dao_record defaults to the daoProfile table when none is given', async () => {
+  const { client } = await connectedClient();
+  const result = await client.callTool({
+    name: 'moloch_submit_dao_record',
+    arguments: { dao, communityMemoryURI: 'ipfs://memory' },
+  });
+  const content = result.structuredContent as { summary: Record<string, unknown> };
+
+  assert.equal(content.summary.recordTable, 'daoProfile');
+});
+
+test('moloch_submit_signal with autoFetchProposalOffering reaches the chain-read path instead of defaulting to 0', async () => {
+  // No RPC configured, so autoFetchProposalOffering's readDaoDirect call fails fast —
+  // this proves the flag is wired to a real chain read rather than silently ignored.
+  const { client } = await connectedClient(stubServiceClient(), { ...config, rpcUrl: undefined });
+  const result = await client.callTool({
+    name: 'moloch_submit_signal',
+    arguments: { dao, title: 'Signal', description: 'Body', autoFetchProposalOffering: true },
+  });
+
+  assert.equal(result.isError, true);
+  assert.match((result.content as Array<{ text: string }>)[0].text, /RPC_URL is required/);
 });
 
 test('moloch_update_gov_settings matches buildGovernanceSettingsTx output', async () => {

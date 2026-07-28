@@ -5,25 +5,31 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { getConfig, type Config } from './config.js';
+import { decodeProposal } from './decode.js';
+import { getNetwork } from './networks.js';
 import { createServiceClient, type ServiceClient } from './service.js';
 import {
   buildOldestReadyProcessTx,
+  estimateBaalGas,
+  preflightProcess,
   processQueue,
   proposalLifecycle,
   readBalances,
   readDaoDirect,
+  readDaoHistory,
   readProposalDirect,
   readTreasuryTokens,
+  resolveProposalOffering,
 } from './chain.js';
 import {
   asAddress,
   asHex,
   BAAL_ETH_TOKEN,
-  BASE_WETH,
   buildApproveTokenTx,
   buildCancelTx,
   buildCustomProposalTx,
   buildDaoMetaTx,
+  buildDaoRecordTx,
   buildGovernanceSettingsTx,
   buildMemoryPostTx,
   buildMintLootTx,
@@ -53,6 +59,7 @@ const SERVER_VERSION = '0.1.0';
 // duplicated here. See CHANGELOG.md for the version history of this server.
 
 const BUILD_ONLY_NOTE = 'Build-only: returns an unsigned {to, value, data, chainId} transaction. This server never signs or broadcasts; the caller is responsible for signing and sending the returned transaction.';
+const AUTO_FETCH_OFFERING_NOTE = 'When true and no explicit raw offering is given, reads the DAO\'s current proposalOffering from chain and uses it as the transaction value. Requires RPC_URL. Ignored if the explicit raw offering field is set.';
 
 const AddressSchema = z.string().regex(/^0x[a-fA-F0-9]{40}$/, 'Expected a 0x-prefixed 20-byte hex address.');
 const HexDataSchema = z.string().regex(/^0x[a-fA-F0-9]*$/, 'Expected 0x-prefixed hex calldata.');
@@ -108,9 +115,8 @@ const SummonParamsSchema = z.object({
 }).describe('Same shape as the summon.json file passed to `moloch-agent summon --params`. All share/loot/offering/threshold values are raw base units; quorum/minRetention are whole-number percentages.');
 
 export function createServer(config: Config, service: ServiceClient): McpServer {
-  if (config.chainId !== 8453) {
-    throw new Error(`This MCP server only supports Base mainnet (chainId 8453); config resolved chainId ${config.chainId}.`);
-  }
+  // Throws on an unsupported chain ID before any tool is registered.
+  getNetwork(config.chainId);
 
   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
   const chainId = config.chainId;
@@ -123,6 +129,19 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
     const normalized = value.trim();
     if (!/^\d+$/.test(normalized)) throw new Error(`${field} must be a non-negative integer string in raw base units.`);
     return BigInt(normalized);
+  }
+
+  // Precedence: an explicit raw value always wins; otherwise, when the caller opts
+  // in via autoFetchProposalOffering, read the DAO's current proposalOffering from
+  // chain; otherwise leave it undefined so the builder defaults to 0.
+  async function resolveOffering(
+    dao: `0x${string}`,
+    proposalOfferingRaw: string | number | undefined,
+    autoFetchProposalOffering: boolean | undefined,
+  ): Promise<bigint | undefined> {
+    if (proposalOfferingRaw != null) return toBigInt(proposalOfferingRaw, 'proposalOfferingRaw');
+    if (autoFetchProposalOffering) return resolveProposalOffering(config, dao);
+    return undefined;
   }
 
   // Mirrors cli.ts's parseRagequitTokens (not exported from tx.ts/chain.ts):
@@ -150,9 +169,9 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
     };
   }
 
-  function safeBuiltTx(build: () => BuiltTx) {
+  async function safeBuiltTx(build: () => BuiltTx | Promise<BuiltTx>) {
     try {
-      const built = build();
+      const built = await build();
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(built, null, 2) }],
         structuredContent: built as unknown as Record<string, unknown>,
@@ -219,7 +238,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
     async ({ amountWei, weth }) => safeBuiltTx(() => buildWrapEthTx({
       chainId,
       amount: toBigInt(amountWei, 'amountWei'),
-      weth: weth ? asAddress(weth) : BASE_WETH,
+      weth: weth ? asAddress(weth) : getNetwork(chainId).contracts.WETH,
     })),
   );
 
@@ -238,7 +257,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
     async ({ amountWei, weth }) => safeBuiltTx(() => buildUnwrapEthTx({
       chainId,
       amount: toBigInt(amountWei, 'amountWei'),
-      weth: weth ? asAddress(weth) : BASE_WETH,
+      weth: weth ? asAddress(weth) : getNetwork(chainId).contracts.WETH,
     })),
   );
 
@@ -280,11 +299,12 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
         expiration: z.number().int().nonnegative().optional().describe('Unix timestamp after which the proposal expires. Defaults to no expiration.'),
         baalGasRaw: RawUintSchema.optional().describe('Baal gas stipend override, in raw units.'),
         proposalOfferingRaw: RawUintSchema.optional().describe('ETH proposal offering (transaction value), in wei. Defaults to 0; read the DAO\'s proposalOffering via moloch_read_dao if the DAO requires one.'),
+        autoFetchProposalOffering: z.boolean().optional().describe(AUTO_FETCH_OFFERING_NOTE),
       },
       outputSchema: BuiltTxOutputSchema,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async ({ dao, token, amountRaw, sharesRaw, lootRaw, title, description, link, expiration, baalGasRaw, proposalOfferingRaw }) => safeBuiltTx(() => buildTributeTx({
+    async ({ dao, token, amountRaw, sharesRaw, lootRaw, title, description, link, expiration, baalGasRaw, proposalOfferingRaw, autoFetchProposalOffering }) => safeBuiltTx(async () => buildTributeTx({
       chainId,
       dao: asAddress(dao),
       token,
@@ -296,7 +316,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
       link,
       expiration,
       baalGas: baalGasRaw == null ? undefined : toBigInt(baalGasRaw, 'baalGasRaw'),
-      proposalOffering: proposalOfferingRaw == null ? undefined : toBigInt(proposalOfferingRaw, 'proposalOfferingRaw'),
+      proposalOffering: await resolveOffering(asAddress(dao), proposalOfferingRaw, autoFetchProposalOffering),
     })),
   );
 
@@ -391,11 +411,12 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
         expiration: z.number().int().nonnegative().optional(),
         baalGasRaw: RawUintSchema.optional(),
         proposalOfferingRaw: RawUintSchema.optional().describe('ETH proposal offering (transaction value), in wei. Defaults to 0.'),
+        autoFetchProposalOffering: z.boolean().optional().describe(AUTO_FETCH_OFFERING_NOTE),
       },
       outputSchema: BuiltTxOutputSchema,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async ({ dao, recipients, amountsRaw, title, description, link, expiration, baalGasRaw, proposalOfferingRaw }) => safeBuiltTx(() => buildMintSharesTx({
+    async ({ dao, recipients, amountsRaw, title, description, link, expiration, baalGasRaw, proposalOfferingRaw, autoFetchProposalOffering }) => safeBuiltTx(async () => buildMintSharesTx({
       chainId,
       dao: asAddress(dao),
       recipients: recipients.map(asAddress),
@@ -405,7 +426,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
       link,
       expiration,
       baalGas: baalGasRaw == null ? undefined : toBigInt(baalGasRaw, 'baalGasRaw'),
-      proposalOffering: proposalOfferingRaw == null ? undefined : toBigInt(proposalOfferingRaw, 'proposalOfferingRaw'),
+      proposalOffering: await resolveOffering(asAddress(dao), proposalOfferingRaw, autoFetchProposalOffering),
     })),
   );
 
@@ -424,11 +445,12 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
         expiration: z.number().int().nonnegative().optional(),
         baalGasRaw: RawUintSchema.optional(),
         proposalOfferingRaw: RawUintSchema.optional().describe('ETH proposal offering (transaction value), in wei. Defaults to 0.'),
+        autoFetchProposalOffering: z.boolean().optional().describe(AUTO_FETCH_OFFERING_NOTE),
       },
       outputSchema: BuiltTxOutputSchema,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async ({ dao, recipients, amountsRaw, title, description, link, expiration, baalGasRaw, proposalOfferingRaw }) => safeBuiltTx(() => buildMintLootTx({
+    async ({ dao, recipients, amountsRaw, title, description, link, expiration, baalGasRaw, proposalOfferingRaw, autoFetchProposalOffering }) => safeBuiltTx(async () => buildMintLootTx({
       chainId,
       dao: asAddress(dao),
       recipients: recipients.map(asAddress),
@@ -438,7 +460,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
       link,
       expiration,
       baalGas: baalGasRaw == null ? undefined : toBigInt(baalGasRaw, 'baalGasRaw'),
-      proposalOffering: proposalOfferingRaw == null ? undefined : toBigInt(proposalOfferingRaw, 'proposalOfferingRaw'),
+      proposalOffering: await resolveOffering(asAddress(dao), proposalOfferingRaw, autoFetchProposalOffering),
     })),
   );
 
@@ -458,11 +480,12 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
         expiration: z.number().int().nonnegative().optional(),
         baalGasRaw: RawUintSchema.optional(),
         proposalOfferingRaw: RawUintSchema.optional().describe('ETH proposal offering (transaction value), in wei. Defaults to 0.'),
+        autoFetchProposalOffering: z.boolean().optional().describe(AUTO_FETCH_OFFERING_NOTE),
       },
       outputSchema: BuiltTxOutputSchema,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async ({ dao, recipient, amountRaw, token, title, description, link, expiration, baalGasRaw, proposalOfferingRaw }) => safeBuiltTx(() => buildPaymentTx({
+    async ({ dao, recipient, amountRaw, token, title, description, link, expiration, baalGasRaw, proposalOfferingRaw, autoFetchProposalOffering }) => safeBuiltTx(async () => buildPaymentTx({
       chainId,
       dao: asAddress(dao),
       recipient: asAddress(recipient),
@@ -473,7 +496,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
       link,
       expiration,
       baalGas: baalGasRaw == null ? undefined : toBigInt(baalGasRaw, 'baalGasRaw'),
-      proposalOffering: proposalOfferingRaw == null ? undefined : toBigInt(proposalOfferingRaw, 'proposalOfferingRaw'),
+      proposalOffering: await resolveOffering(asAddress(dao), proposalOfferingRaw, autoFetchProposalOffering),
     })),
   );
 
@@ -577,11 +600,12 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
         expiration: z.number().int().nonnegative().optional(),
         baalGasRaw: RawUintSchema.optional(),
         proposalOfferingRaw: RawUintSchema.optional().describe('ETH proposal offering (transaction value), in wei. Defaults to 0; read the DAO\'s proposalOffering via moloch_read_dao if the DAO requires one.'),
+        autoFetchProposalOffering: z.boolean().optional().describe(AUTO_FETCH_OFFERING_NOTE),
       },
       outputSchema: BuiltTxOutputSchema,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async ({ dao, title, description, link, expiration, baalGasRaw, proposalOfferingRaw }) => safeBuiltTx(() => buildSignalTx({
+    async ({ dao, title, description, link, expiration, baalGasRaw, proposalOfferingRaw, autoFetchProposalOffering }) => safeBuiltTx(async () => buildSignalTx({
       chainId,
       dao: asAddress(dao),
       title,
@@ -589,7 +613,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
       link,
       expiration,
       baalGas: baalGasRaw == null ? undefined : toBigInt(baalGasRaw, 'baalGasRaw'),
-      proposalOffering: proposalOfferingRaw == null ? undefined : toBigInt(proposalOfferingRaw, 'proposalOfferingRaw'),
+      proposalOffering: await resolveOffering(asAddress(dao), proposalOfferingRaw, autoFetchProposalOffering),
     })),
   );
 
@@ -612,11 +636,12 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
         expiration: z.number().int().nonnegative().optional(),
         baalGasRaw: RawUintSchema.optional(),
         proposalOfferingRaw: RawUintSchema.optional().describe('ETH proposal offering (transaction value), in wei. Defaults to 0.'),
+        autoFetchProposalOffering: z.boolean().optional().describe(AUTO_FETCH_OFFERING_NOTE),
       },
       outputSchema: BuiltTxOutputSchema,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
     },
-    async ({ dao, title, description, link, name, daoDescription, communityMemoryURI, proposalWorkspaceURI, sharedStateURI, web, expiration, baalGasRaw, proposalOfferingRaw }) => safeBuiltTx(() => buildDaoMetaTx({
+    async ({ dao, title, description, link, name, daoDescription, communityMemoryURI, proposalWorkspaceURI, sharedStateURI, web, expiration, baalGasRaw, proposalOfferingRaw, autoFetchProposalOffering }) => safeBuiltTx(async () => buildDaoMetaTx({
       chainId,
       dao: asAddress(dao),
       title,
@@ -630,7 +655,55 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
       web,
       expiration,
       baalGas: baalGasRaw == null ? undefined : toBigInt(baalGasRaw, 'baalGasRaw'),
-      proposalOffering: proposalOfferingRaw == null ? undefined : toBigInt(proposalOfferingRaw, 'proposalOfferingRaw'),
+      proposalOffering: await resolveOffering(asAddress(dao), proposalOfferingRaw, autoFetchProposalOffering),
+    })),
+  );
+
+  server.registerTool(
+    'moloch_submit_dao_record',
+    {
+      title: 'Submit a generic DAO record proposal',
+      description: `Builds an unsigned submitProposal transaction that, if it passes and is processed, posts a record to an arbitrary Poster table (charter, joinRules, manifesto, ...) — the same mechanism moloch_update_dao_meta uses for the daoProfile table, generalized to any table. ${BUILD_ONLY_NOTE}`,
+      inputSchema: {
+        dao: AddressSchema,
+        table: z.string().optional().describe('Poster record table to post to, e.g. "charter" or "joinRules". Defaults to "daoProfile" — for that specific table, prefer moloch_update_dao_meta\'s named fields.'),
+        tag: z.string().optional().describe('Poster tag under which the record is indexed. Defaults to the DAO profile update tag.'),
+        content: z.record(z.string(), z.unknown()).optional().describe('Arbitrary record body merged into the posted content. Cannot override the daoId/table/queryType/updatedAt envelope fields.'),
+        title: z.string().optional().describe('Proposal title. Defaults to "Update <table> record".'),
+        description: z.string().optional().describe('Proposal description.'),
+        link: z.string().optional().describe('Proposal content URI.'),
+        name: z.string().optional().describe('Named field: DAO display name (only meaningful for table "daoProfile").'),
+        daoDescription: z.string().optional().describe('Named field: DAO profile description (only meaningful for table "daoProfile").'),
+        communityMemoryURI: z.string().optional(),
+        proposalWorkspaceURI: z.string().optional(),
+        sharedStateURI: z.string().optional(),
+        web: z.string().optional(),
+        expiration: z.number().int().nonnegative().optional(),
+        baalGasRaw: RawUintSchema.optional(),
+        proposalOfferingRaw: RawUintSchema.optional().describe('ETH proposal offering (transaction value), in wei. Defaults to 0.'),
+        autoFetchProposalOffering: z.boolean().optional().describe(AUTO_FETCH_OFFERING_NOTE),
+      },
+      outputSchema: BuiltTxOutputSchema,
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+    },
+    async ({ dao, table, tag, content, title, description, link, name, daoDescription, communityMemoryURI, proposalWorkspaceURI, sharedStateURI, web, expiration, baalGasRaw, proposalOfferingRaw, autoFetchProposalOffering }) => safeBuiltTx(async () => buildDaoRecordTx({
+      chainId,
+      dao: asAddress(dao),
+      table,
+      tag,
+      content,
+      title,
+      description,
+      link,
+      name,
+      daoDescription,
+      communityMemoryURI,
+      proposalWorkspaceURI,
+      sharedStateURI,
+      web,
+      expiration,
+      baalGas: baalGasRaw == null ? undefined : toBigInt(baalGasRaw, 'baalGasRaw'),
+      proposalOffering: await resolveOffering(asAddress(dao), proposalOfferingRaw, autoFetchProposalOffering),
     })),
   );
 
@@ -656,11 +729,12 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
           baalGasRaw: RawUintSchema.optional(),
           valueRaw: RawUintSchema.optional().describe('ETH proposal offering (transaction value), in wei. Defaults to 0.'),
         }),
+        autoFetchProposalOffering: z.boolean().optional().describe(AUTO_FETCH_OFFERING_NOTE),
       },
       outputSchema: BuiltTxOutputSchema,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async ({ dao, link, params }) => safeBuiltTx(() => buildGovernanceSettingsTx({
+    async ({ dao, link, params, autoFetchProposalOffering }) => safeBuiltTx(async () => buildGovernanceSettingsTx({
       chainId,
       dao: asAddress(dao),
       link,
@@ -676,7 +750,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
         minRetention: toBigInt(params.minRetention, 'params.minRetention'),
         expiration: params.expiration,
         baalGas: params.baalGasRaw == null ? undefined : toBigInt(params.baalGasRaw, 'params.baalGasRaw'),
-        value: params.valueRaw == null ? undefined : toBigInt(params.valueRaw, 'params.valueRaw'),
+        value: await resolveOffering(asAddress(dao), params.valueRaw, autoFetchProposalOffering),
       } satisfies GovernanceSettingsParams,
     })),
   );
@@ -696,11 +770,12 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
         expiration: z.number().int().nonnegative().optional(),
         baalGasRaw: RawUintSchema.optional(),
         proposalOfferingRaw: RawUintSchema.optional().describe('ETH proposal offering (transaction value), in wei. Defaults to 0.'),
+        autoFetchProposalOffering: z.boolean().optional().describe(AUTO_FETCH_OFFERING_NOTE),
       },
       outputSchema: BuiltTxOutputSchema,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async ({ dao, pauseShares, pauseLoot, title, description, link, expiration, baalGasRaw, proposalOfferingRaw }) => safeBuiltTx(() => buildTokenSettingsTx({
+    async ({ dao, pauseShares, pauseLoot, title, description, link, expiration, baalGasRaw, proposalOfferingRaw, autoFetchProposalOffering }) => safeBuiltTx(async () => buildTokenSettingsTx({
       chainId,
       dao: asAddress(dao),
       pauseShares,
@@ -710,7 +785,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
       link,
       expiration,
       baalGas: baalGasRaw == null ? undefined : toBigInt(baalGasRaw, 'baalGasRaw'),
-      proposalOffering: proposalOfferingRaw == null ? undefined : toBigInt(proposalOfferingRaw, 'proposalOfferingRaw'),
+      proposalOffering: await resolveOffering(asAddress(dao), proposalOfferingRaw, autoFetchProposalOffering),
     })),
   );
 
@@ -734,11 +809,12 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
         expiration: z.number().int().nonnegative().optional(),
         baalGasRaw: RawUintSchema.optional(),
         proposalOfferingRaw: RawUintSchema.optional().describe('ETH proposal offering (transaction value), in wei. Defaults to 0.'),
+        autoFetchProposalOffering: z.boolean().optional().describe(AUTO_FETCH_OFFERING_NOTE),
       },
       outputSchema: BuiltTxOutputSchema,
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
     },
-    async ({ dao, title, description, link, proposalType, actions, expiration, baalGasRaw, proposalOfferingRaw }) => safeBuiltTx(() => buildCustomProposalTx({
+    async ({ dao, title, description, link, proposalType, actions, expiration, baalGasRaw, proposalOfferingRaw, autoFetchProposalOffering }) => safeBuiltTx(async () => buildCustomProposalTx({
       chainId,
       dao: asAddress(dao),
       title,
@@ -753,7 +829,7 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
       })),
       expiration,
       baalGas: baalGasRaw == null ? undefined : toBigInt(baalGasRaw, 'baalGasRaw'),
-      proposalOffering: proposalOfferingRaw == null ? undefined : toBigInt(proposalOfferingRaw, 'proposalOfferingRaw'),
+      proposalOffering: await resolveOffering(asAddress(dao), proposalOfferingRaw, autoFetchProposalOffering),
     })),
   );
 
@@ -802,6 +878,23 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
     async ({ dao }) => safeRead(() => readTreasuryTokens({ config, service, dao: asAddress(dao) })),
   );
 
+  // TODO(pagination): same gap as moloch_service_list_proposals — first/skip
+  // only, no has_more/next_offset/total_count.
+  server.registerTool(
+    'moloch_read_dao_history',
+    {
+      title: 'Read DAO profile and proposal history together',
+      description: 'Composes the indexed DAO profile with its proposal history in one call (moloch-agent has no combined indexer endpoint, so this issues two requests: moloch_service_get_dao + moloch_service_list_proposals). Equivalent to moloch.mjs\'s graph-dao-history.',
+      inputSchema: {
+        dao: AddressSchema,
+        first: z.number().int().positive().max(1000).optional().describe('Number of proposals to fetch. Defaults to 100.'),
+        skip: z.number().int().nonnegative().optional().describe('Number of proposals to skip, for pagination. Defaults to 0.'),
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    async ({ dao, first, skip }) => safeRead(() => readDaoHistory({ config, service, dao: asAddress(dao), first: first ?? 100, skip: skip ?? 0 })),
+  );
+
   server.registerTool(
     'moloch_read_proposal',
     {
@@ -817,11 +910,70 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
     'moloch_read_proposal_lifecycle',
     {
       title: 'Derive a proposal\'s lifecycle status',
-      description: 'Blends the indexed proposal (falling back to a chain-only read if the indexer is unavailable) with direct chain status/state to derive a lifecycle summary (needsSponsor, inVoting, inGrace, processableNow, failedQuorum, ...). This is the same derivation moloch-agent\'s process-queue/process-ready use, and does not rely on indexed "passed" as the execution gate.',
+      description: 'Answers "is this proposal processable right now, and if not, why": blends the indexed proposal (falling back to a chain-only read if the indexer is unavailable) with direct chain status/state to derive a lifecycle summary (needsSponsor, inVoting, inGrace, processableNow, failedQuorum, ...). This is the same derivation moloch-agent\'s process-queue/process-ready use, and does not rely on indexed "passed" as the execution gate. Use moloch_preflight_process instead if you also want the already-processed and proposalData-match checks moloch_process\'s CLI counterpart runs before broadcasting.',
       inputSchema: { dao: AddressSchema, proposal: ProposalIdSchema },
       annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
     },
     async ({ dao, proposal }) => safeRead(() => proposalLifecycle({ config, service, dao: asAddress(dao), proposal })),
+  );
+
+  server.registerTool(
+    'moloch_preflight_process',
+    {
+      title: 'Check whether a proposal is safe to process now',
+      description: 'Runs the same checks this server\'s moloch-agent CLI applies before broadcasting `process`: processableNow (via moloch_read_proposal_lifecycle\'s derivation), not already processed, and — when proposalData is supplied — that it matches what the indexer has for this proposal. Returns {ok, reason, status, processGasLimit, ...} instead of throwing, so a caller can inspect why a proposal isn\'t ready before calling moloch_process.',
+      inputSchema: {
+        dao: AddressSchema,
+        proposal: ProposalIdSchema,
+        proposalData: HexDataSchema.optional().describe('The proposalData you intend to pass to moloch_process. Verified against the indexer\'s copy when given.'),
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    async ({ dao, proposal, proposalData }) => safeRead(() => preflightProcess({
+      config,
+      service,
+      dao: asAddress(dao),
+      proposal,
+      proposalData: proposalData == null ? undefined : asHex(proposalData),
+    })),
+  );
+
+  server.registerTool(
+    'moloch_estimate_baal_gas',
+    {
+      title: 'Estimate a safe baalGas stipend',
+      description: 'Simulates a proposal\'s multisend calldata through the DAO\'s Safe module (the same path a passed proposal executes through) to estimate a submitProposal baalGas stipend, ported from the CLI\'s --estimate-baal-gas. Offered as a standalone estimate rather than auto-applied to any build tool here: this server\'s write tools default baalGas to 0 and expect the caller\'s smart account or relayer to size execution gas, so this tool is CLI-oriented but usable from either.',
+      inputSchema: {
+        dao: AddressSchema,
+        proposalData: HexDataSchema.describe('The proposal\'s multisend calldata, e.g. a built tx\'s summary.proposalData.'),
+        actionCount: z.number().int().positive().optional().describe('Number of actions encoded in the multisend. Defaults to 1.'),
+        bufferPercent: z.number().int().positive().optional().describe('Whole-number percentage multiplier applied to the raw gas estimate. Defaults to 120 (1.2x).'),
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    async ({ dao, proposalData, actionCount, bufferPercent }) => safeRead(() => estimateBaalGas({
+      config,
+      service,
+      dao: asAddress(dao),
+      proposalData: asHex(proposalData),
+      actionCount: actionCount ?? 1,
+      bufferPercent,
+    })),
+  );
+
+  server.registerTool(
+    'moloch_decode_proposal',
+    {
+      title: 'Decode proposal calldata into named actions',
+      description: 'Decodes Baal submitProposal or multisend calldata into named actions (Poster posts are parsed as JSON, other Baal calls are decoded by function name and args, unrecognized calls fall back to their 4-byte selector). Verifies what a proposal actually executes before signing (pass --data, e.g. this server\'s own build-only tx.data) or before voting (pass --dao/--proposal to fetch proposalData from the indexer — the Baal contract itself only stores a hash, not the calldata, so this path requires the indexer to have it).',
+      inputSchema: {
+        data: HexDataSchema.optional().describe('submitProposal or multisend calldata to decode directly. Takes precedence over dao/proposal.'),
+        dao: AddressSchema.optional().describe('Fetch proposalData for this DAO + proposal from the indexer instead of decoding --data directly.'),
+        proposal: ProposalIdSchema.optional(),
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    async ({ data, dao, proposal }) => safeRead(() => decodeProposal({ config, service, data: data == null ? undefined : asHex(data), dao, proposal })),
   );
 
   // TODO(pagination): same gap as moloch_service_list_proposals — this

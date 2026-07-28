@@ -13,8 +13,11 @@ Usage:
   moloch-agent balances --dao 0xDAO [--token 0xERC20]
   moloch-agent balances --address 0xADDRESS [--token 0xERC20]
   moloch-agent treasury-tokens --dao 0xDAO
+  moloch-agent dao-history --dao 0xDAO [--first 100] [--skip 0]
   moloch-agent read-proposal --dao 0xDAO --proposal 1
   moloch-agent proposal-lifecycle --dao 0xDAO --proposal 1
+  moloch-agent decode-proposal --data 0x...
+  moloch-agent decode-proposal --dao 0xDAO --proposal 1
   moloch-agent process-queue --dao 0xDAO [--first 100]
   moloch-agent wrap-eth --amount 0.01 [--build-only]
   moloch-agent approve-token --token 0xERC20 --amount 1000000 --spender 0xSPENDER [--build-only]
@@ -28,6 +31,7 @@ Usage:
   moloch-agent memory-post --dao 0xDAO --thread-id topic --body "..." [--build-only]
   moloch-agent signal --dao 0xDAO --title "..." --description "..." [--link ipfs://...] [--build-only]
   moloch-agent dao-meta --dao 0xDAO --community-memory-uri ipfs://... [--build-only]
+  moloch-agent dao-record --dao 0xDAO --table charter --content-file charter.json [--tag daohaus.shares.daoProfile] [--build-only]
   moloch-agent gov-settings --dao 0xDAO --params gov-settings.json [--build-only]
   moloch-agent token-settings --dao 0xDAO --pause-shares false --pause-loot false [--build-only]
   moloch-agent custom-proposal --dao 0xDAO --title "..." --actions actions.json [--build-only]
@@ -41,8 +45,9 @@ Usage:
   moloch-agent sponsor --dao 0xDAO --proposal 1 [--build-only]
   moloch-agent vote --dao 0xDAO --proposal 1 --approved true [--reason "..."] [--build-only]
   moloch-agent cancel --dao 0xDAO --proposal 1 [--build-only]
-  moloch-agent process --dao 0xDAO --proposal 1 --proposal-data 0x... [--gas-limit 1200000] [--build-only]
+  moloch-agent process --dao 0xDAO --proposal 1 --proposal-data 0x... [--gas-limit 1200000] [--skip-preflight] [--build-only]
   moloch-agent process-ready --dao 0xDAO [--first 100] [--build-only]
+  moloch-agent estimate-baal-gas --dao 0xDAO --proposal-data 0x... [--action-count 1] [--baal-gas-buffer 1.2]
 
 Environment:
   MOLOCH_SERVICE_URL  Defaults to https://moloch-service-production.up.railway.app
@@ -79,6 +84,12 @@ Notes:
   mint-shares and mint-loot use human 18-decimal DAO token units by default.
   process-queue never trusts indexed passed=true as the execution gate; RPC state is used when available.
   process-ready selects the oldest ready proposal and includes a gas limit based on proposal baalGas when available.
+  process runs a preflight before broadcasting (processableNow, not already processed, and --proposal-data matches the indexer) and, unless --gas-limit/--process-gas-limit is set, uses the preflight's computed gas limit. Pass --skip-preflight to bypass (--build-only always skips it).
+  dao-record posts to an arbitrary Poster table (--table, default daoProfile) via a proposal; --content-file is a JSON object merged into the record. dao-meta is a thin wrapper over dao-record for the daoProfile table specifically.
+  decode-proposal decodes submitProposal or multisend calldata into named actions (Poster posts parsed as JSON, other Baal calls by function name). Pass --data directly, or --dao/--proposal to fetch proposalData from the indexer — the Baal contract itself only stores a hash, not the calldata.
+  dao-history composes the indexed DAO profile with its proposal history in one call (two indexer requests under the hood; the hosted service has no combined endpoint).
+  --estimate-baal-gas opts proposal-submitting commands into simulating the built multisend through the DAO's Safe module to size baalGas, instead of the default 0. --baal-gas-buffer (default 1.2) multiplies the raw estimate; --require-baal-gas-estimate errors instead of silently falling back to 0 if estimation fails (e.g. the DAO Safe address can't be resolved). Ignored if --baal-gas is already explicit.
+  estimate-baal-gas is the same estimation as a standalone command, for a proposal you've already built (pass its summary.proposalData).
   summon uses the Base advanced-token summoner and includes a DAOhaus metadata Poster action.
   Never expand shortened addresses such as 0x1234...abcd. Use only full addresses from account/env/chain/user input.
 `;

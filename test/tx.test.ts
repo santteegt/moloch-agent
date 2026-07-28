@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BAAL_ETH_TOKEN, BASE_WETH, buildApproveTokenTx, buildCancelTx, buildCustomProposalTx, buildDaoMetaTx, buildGovernanceSettingsTx, buildMemoryPostTx, buildMintLootTx, buildMintSharesTx, buildPaymentTx, buildRagequitTx, buildSignalTx, buildSponsorTx, buildSummonTx, buildTokenSettingsTx, buildTributeTx, buildUnwrapEthTx, buildVoteTx, buildWrapEthTx, parseBaalTokenUnits, parseNativeTokenAmount, parseTokenUnits, signerAccount } from '../src/tx.js';
+import { BAAL_ETH_TOKEN, buildApproveTokenTx, buildCancelTx, buildCustomProposalTx, buildDaoMetaTx, buildDaoRecordTx, buildGovernanceSettingsTx, buildMemoryPostTx, buildMintLootTx, buildMintSharesTx, buildPaymentTx, buildRagequitTx, buildSignalTx, buildSponsorTx, buildSummonTx, buildTokenSettingsTx, buildTributeTx, buildUnwrapEthTx, buildVoteTx, buildWrapEthTx, parseBaalTokenUnits, parseNativeTokenAmount, parseTokenUnits, signerAccount } from '../src/tx.js';
+import { getNetwork } from '../src/networks.js';
+
+const BASE_WETH = getNetwork(8453).contracts.WETH;
 
 const dao = '0x0000000000000000000000000000000000000001';
 
@@ -100,6 +103,35 @@ test('buildDaoMetaTx creates metadata proposal', () => {
   assert.equal(built.tx.to, dao);
   assert.equal(built.summary.proposalKind, 'UPDATE_METADATA_SETTINGS');
   assert.equal(built.summary.recordTable, 'daoProfile');
+});
+
+test('buildDaoRecordTx posts to an arbitrary table with a default title and tag', () => {
+  const built = buildDaoRecordTx({
+    chainId: 8453,
+    dao,
+    table: 'charter',
+    content: { body: 'We govern by rough consensus.' },
+  });
+
+  assert.equal(built.tx.to, dao);
+  assert.equal(built.summary.proposalKind, 'UPDATE_METADATA_SETTINGS');
+  assert.equal(built.summary.recordTable, 'charter');
+});
+
+test('buildDaoRecordTx honors an explicit tag and title, and defaults the table to daoProfile', () => {
+  const daoMeta = buildDaoMetaTx({ chainId: 8453, dao, communityMemoryURI: 'ipfs://memory' });
+  const record = buildDaoRecordTx({
+    chainId: 8453,
+    dao,
+    communityMemoryURI: 'ipfs://memory',
+    tag: 'custom.tag',
+    title: 'Custom title',
+  });
+
+  // Same table/target as the daoProfile wrapper, but the explicit tag/title win.
+  assert.equal(record.summary.recordTable, daoMeta.summary.recordTable);
+  assert.equal(record.tx.to, daoMeta.tx.to);
+  assert.equal(record.summary.tag, 'custom.tag');
 });
 
 test('buildTributeTx creates ERC-20 tribute transaction with separate proposal offering', () => {
