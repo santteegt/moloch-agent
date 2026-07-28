@@ -6,7 +6,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { getConfig, type Config } from './config.js';
 import { decodeProposal } from './decode.js';
-import { getNetwork } from './networks.js';
+import { getNetwork, listNetworks } from './networks.js';
 import { createServiceClient, type ServiceClient } from './service.js';
 import {
   buildOldestReadyProcessTx,
@@ -211,6 +211,17 @@ export function createServer(config: Config, service: ServiceClient): McpServer 
   //   moloch_service_pin_json (each call creates a new pin).
   // - openWorldHint: false for pure builders with no I/O at all; true for
   //   anything that reads the chain or the hosted service.
+  server.registerTool(
+    'moloch_list_networks',
+    {
+      title: 'List supported chains',
+      description: 'Lists every chain this server supports, with its default RPC/service URLs, contract addresses, and Poster tags (src/networks.ts). Static registry data — does not reflect RPC_URL/MOLOCH_SERVICE_URL env overrides, which only apply to the single chain this server is actually running against.',
+      inputSchema: {},
+      annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+    },
+    async () => safeRead(async () => ({ networks: listNetworks().map(({ viemChain, ...network }) => network) })),
+  );
+
   server.registerTool(
     'moloch_summon',
     {

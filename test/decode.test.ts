@@ -8,7 +8,6 @@ import type { ServiceClient } from '../src/service.js';
 const dao = '0x0000000000000000000000000000000000000001' as `0x${string}`;
 
 const config: Config = {
-  serviceUrl: 'https://example.test',
   chainId: 8453,
 };
 

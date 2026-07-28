@@ -7,7 +7,7 @@ import { pathToFileURL } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createServer, isMainModule } from '../src/mcp-server.js';
-import { getNetwork } from '../src/networks.js';
+import { getNetwork, listNetworks } from '../src/networks.js';
 import {
   BAAL_ETH_TOKEN,
   buildApproveTokenTx,
@@ -40,9 +40,7 @@ const recipient = '0x0000000000000000000000000000000000000003';
 const BASE_WETH = getNetwork(8453).contracts.WETH;
 
 const config: Config = {
-  serviceUrl: 'https://example.test',
   chainId: 8453,
-  rpcUrl: 'https://mainnet.base.org',
 };
 
 function stubServiceClient(overrides: Partial<ServiceClient> = {}): ServiceClient {
@@ -70,6 +68,20 @@ async function connectedClient(service: ServiceClient = stubServiceClient(), ser
   return { client, server };
 }
 
+// rpcUrl always resolves from the chain registry now (there's no "unset"
+// state), so tests that want chain-touching tools to fail fast — instead of
+// hitting the real network — point RPC_URL at a port nothing listens on.
+async function withUnroutableRpc<T>(fn: () => Promise<T>): Promise<T> {
+  const original = process.env.RPC_URL;
+  process.env.RPC_URL = 'http://127.0.0.1:1';
+  try {
+    return await fn();
+  } finally {
+    if (original === undefined) delete process.env.RPC_URL;
+    else process.env.RPC_URL = original;
+  }
+}
+
 test('createServer rejects a non-Base chainId', () => {
   assert.throws(
     () => createServer({ ...config, chainId: 1 }, stubServiceClient()),
@@ -87,6 +99,7 @@ test('lists all documented moloch tools', async () => {
     'moloch_cancel',
     'moloch_decode_proposal',
     'moloch_estimate_baal_gas',
+    'moloch_list_networks',
     'moloch_list_process_queue',
     'moloch_list_treasury_tokens',
     'moloch_mint_loot',
@@ -128,6 +141,18 @@ test('lists all documented moloch tools', async () => {
     assert.equal(typeof tool.description, 'string');
     assert.ok(tool.description && tool.description.length > 0);
   }
+});
+
+test('moloch_list_networks lists the static chain registry, stripping the internal viemChain object', async () => {
+  const { client } = await connectedClient();
+  const result = await client.callTool({ name: 'moloch_list_networks', arguments: {} });
+  const content = result.structuredContent as { networks: Array<Record<string, unknown>> };
+
+  const expected = listNetworks().map(({ viemChain, ...network }) => network);
+  assert.deepEqual(content.networks, expected);
+  assert.equal('viemChain' in content.networks[0], false);
+  assert.equal(content.networks[0].chainId, 8453);
+  assert.equal(content.networks[0].rpcUrl, 'https://mainnet.base.org');
 });
 
 test('moloch_summon matches buildSummonTx output for identical params', async () => {
@@ -361,7 +386,7 @@ test('moloch_decode_proposal fetches proposalData from the service when only dao
   assert.equal(content.source, 'multiSend');
 });
 
-test('moloch_preflight_process reports why a proposal still in voting is not processable, without RPC', async () => {
+test('moloch_preflight_process reports why a proposal still in voting is not processable, with an unreachable RPC', async () => {
   const now = Math.floor(Date.now() / 1000);
   const service = stubServiceClient({
     proposal: async () => ({
@@ -382,9 +407,9 @@ test('moloch_preflight_process reports why a proposal still in voting is not pro
       },
     }),
   });
-  const { client } = await connectedClient(service, { ...config, rpcUrl: undefined });
+  const { client } = await connectedClient(service);
 
-  const result = await client.callTool({ name: 'moloch_preflight_process', arguments: { dao, proposal: 2 } });
+  const result = await withUnroutableRpc(() => client.callTool({ name: 'moloch_preflight_process', arguments: { dao, proposal: 2 } }));
   const content = result.structuredContent as { ok: boolean; status: string };
 
   assert.equal(content.ok, false);
@@ -393,7 +418,7 @@ test('moloch_preflight_process reports why a proposal still in voting is not pro
 
 test('moloch_estimate_baal_gas surfaces the Safe-address resolution error as a tool error instead of throwing', async () => {
   const service = stubServiceClient({ dao: async () => ({}) });
-  const { client } = await connectedClient(service, { ...config, rpcUrl: undefined });
+  const { client } = await connectedClient(service);
 
   const result = await client.callTool({
     name: 'moloch_estimate_baal_gas',
@@ -528,16 +553,17 @@ test('moloch_submit_dao_record defaults to the daoProfile table when none is giv
 });
 
 test('moloch_submit_signal with autoFetchProposalOffering reaches the chain-read path instead of defaulting to 0', async () => {
-  // No RPC configured, so autoFetchProposalOffering's readDaoDirect call fails fast —
-  // this proves the flag is wired to a real chain read rather than silently ignored.
-  const { client } = await connectedClient(stubServiceClient(), { ...config, rpcUrl: undefined });
-  const result = await client.callTool({
+  // RPC pointed at an unroutable address, so autoFetchProposalOffering's
+  // readDaoDirect call fails fast — this proves the flag is wired to a real
+  // chain read rather than silently ignored.
+  const { client } = await connectedClient(stubServiceClient());
+  const result = await withUnroutableRpc(() => client.callTool({
     name: 'moloch_submit_signal',
     arguments: { dao, title: 'Signal', description: 'Body', autoFetchProposalOffering: true },
-  });
+  }));
 
   assert.equal(result.isError, true);
-  assert.match((result.content as Array<{ text: string }>)[0].text, /RPC_URL is required/);
+  assert.match((result.content as Array<{ text: string }>)[0].text, /HTTP request failed/);
 });
 
 test('moloch_update_gov_settings matches buildGovernanceSettingsTx output', async () => {
@@ -583,17 +609,17 @@ test('moloch_submit_custom_proposal matches buildCustomProposalTx output (the ga
   assert.deepEqual(result.structuredContent, expected);
 });
 
-test('moloch_read_proposal surfaces a config error as a tool error instead of hitting the network', async () => {
-  const { client } = await connectedClient(stubServiceClient(), { ...config, rpcUrl: undefined });
-  const result = await client.callTool({ name: 'moloch_read_proposal', arguments: { dao, proposal: 1 } });
+test('moloch_read_proposal surfaces an RPC error as a tool error instead of crashing', async () => {
+  const { client } = await connectedClient(stubServiceClient());
+  const result = await withUnroutableRpc(() => client.callTool({ name: 'moloch_read_proposal', arguments: { dao, proposal: 1 } }));
 
   assert.equal(result.isError, true);
-  assert.match((result.content as Array<{ text: string }>)[0].text, /RPC_URL is required/);
+  assert.match((result.content as Array<{ text: string }>)[0].text, /HTTP request failed/);
 });
 
-test('moloch_read_proposal_lifecycle surfaces a config error as a tool error instead of hitting the network', async () => {
-  const { client } = await connectedClient(stubServiceClient(), { ...config, rpcUrl: undefined });
-  const result = await client.callTool({ name: 'moloch_read_proposal_lifecycle', arguments: { dao, proposal: 1 } });
+test('moloch_read_proposal_lifecycle surfaces an RPC error as a tool error instead of crashing', async () => {
+  const { client } = await connectedClient(stubServiceClient());
+  const result = await withUnroutableRpc(() => client.callTool({ name: 'moloch_read_proposal_lifecycle', arguments: { dao, proposal: 1 } }));
 
   assert.equal(result.isError, true);
 });

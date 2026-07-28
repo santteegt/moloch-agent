@@ -3,6 +3,7 @@ export const helpText = `moloch-agent
 Usage:
   moloch-agent health
   moloch-agent capabilities
+  moloch-agent networks
   moloch-agent account
   moloch-agent dao --dao 0xDAO
   moloch-agent proposals --dao 0xDAO [--first 100] [--skip 0]
@@ -59,6 +60,7 @@ Environment:
   IPFS_GATEWAY_URL    When set, auto-created proposal links use gateway URLs instead of ipfs:// URIs
 
 Notes:
+  networks lists every chain this tool supports, with its default RPC/service URLs, contract addresses, and Poster tags (src/networks.ts). Static registry data; unlike the CHAIN_ID this process is actually running against, it does not reflect RPC_URL/MOLOCH_SERVICE_URL overrides.
   account prints the exact signer address derived from PRIVATE_KEY.
   The hosted service handles Graph reads and Pinata uploads.
   The service never receives private keys.

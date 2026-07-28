@@ -1,9 +1,12 @@
 import { base, type Chain } from 'viem/chains';
 
+export const DEFAULT_SERVICE_URL = 'https://moloch-service-production.up.railway.app';
+
 export type ChainNetwork = {
   chainId: number;
   name: string;
   rpcUrl: string;
+  serviceUrl: string;
   explorerBaseUrl: string;
   safeApiBaseUrl: string;
   contracts: {
@@ -28,6 +31,7 @@ const NETWORKS: Record<number, ChainNetwork> = {
     chainId: 8453,
     name: 'Base',
     rpcUrl: 'https://mainnet.base.org',
+    serviceUrl: DEFAULT_SERVICE_URL,
     explorerBaseUrl: 'https://basescan.org',
     safeApiBaseUrl: 'https://safe-transaction-base.safe.global',
     contracts: {
@@ -47,15 +51,37 @@ const NETWORKS: Record<number, ChainNetwork> = {
   },
 };
 
-export function getNetwork(chainId: number): ChainNetwork {
+// Full list of chains this tool supports, in registry order — used by the
+// CLI `networks` command and MCP `moloch_list_networks` tool. Static
+// registry data only; unlike getNetwork(), does not apply the
+// RPC_URL/MOLOCH_SERVICE_URL env overrides, since those only make sense for
+// the single currently-configured chain, not the catalog of all of them.
+export function listNetworks(): ChainNetwork[] {
+  return Object.values(NETWORKS);
+}
+
+// Resolves a chain's registry entry, applying RPC_URL/MOLOCH_SERVICE_URL env
+// overrides on top of the per-chain defaults (e.g. an always-on agent's own
+// Alchemy/Infura RPC, or a self-hosted moloch-service). Throws immediately
+// for an unsupported chain ID, before any command (including --build-only)
+// can construct a transaction against the wrong deployment.
+export function getNetwork(chainId: number, env: NodeJS.ProcessEnv = process.env): ChainNetwork {
   const network = NETWORKS[chainId];
   if (!network) {
     const supported = Object.values(NETWORKS).map((n) => `${n.chainId} (${n.name})`).join(', ');
     throw new Error(`Chain ID ${chainId} is not supported. Supported: ${supported}.`);
   }
-  return network;
+  return {
+    ...network,
+    rpcUrl: env.RPC_URL || network.rpcUrl,
+    serviceUrl: normalizeServiceUrl(env.MOLOCH_SERVICE_URL || network.serviceUrl),
+  };
 }
 
 export function getViemChain(chainId: number): Chain {
   return getNetwork(chainId).viemChain;
+}
+
+export function normalizeServiceUrl(value: string): string {
+  return value.replace(/\/+$/, '');
 }
