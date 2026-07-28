@@ -1,15 +1,37 @@
-import { createPublicClient, formatEther, formatUnits, getAddress, http } from 'viem';
-import { base } from 'viem/chains';
+import { createPublicClient, encodeFunctionData, formatEther, formatUnits, getAddress, http, type Hex } from 'viem';
 import type { Config } from './config.js';
+import { getNetwork, getViemChain } from './networks.js';
 import type { ServiceClient } from './service.js';
-import { BAAL_ABI, BAAL_ETH_TOKEN, type BuiltTx } from './tx.js';
+import { BAAL_ABI, BAAL_ETH_TOKEN, GNOSIS_MODULE_ABI, parseBigint, type BuiltTx } from './tx.js';
 import { buildProcessTx } from './tx.js';
 
+// Baal proposal state ordinals, in on-chain enum order — translates numeric
+// `state()`/`getProposalStatus()` reads into readable names. Used by
+// readProposalDirect and deriveProposalLifecycle.
 export const STATE_NAMES = ['unborn', 'submitted', 'voting', 'cancelled', 'grace', 'ready', 'processed', 'defeated'];
+
+// Baal states from which a *previous* proposal counts as resolved enough to
+// unblock processing the current one. Used by deriveProposalLifecycle's
+// blockedByPreviousProposal check.
 const PREV_PROCESS_ELIGIBLE = new Set([0, 3, 6, 7]);
+
+// Extra gas headroom added on top of a proposal's declared baalGas when
+// computing a `process` transaction's gas limit. Used by chainProposalContext.
 const PROCESS_PROPOSAL_GAS_LIMIT_ADDITION = 400000n;
+
+// Fallback gas limit for `process` when a proposal declared no baalGas (or
+// none could be read). Used by chainProposalContext and buildOldestReadyProcessTx.
 const DEFAULT_PROCESS_GAS_LIMIT = 800000n;
 
+// Extra gas added per multisend action on top of the raw
+// execTransactionFromModule gas simulation. Used by estimateBaalGas.
+const ACTION_GAS_LIMIT_ADDITION = 150000n;
+
+// Default safety multiplier (120 = 1.2x) applied to estimateBaalGas's raw
+// estimate when the caller doesn't supply bufferPercent.
+const DEFAULT_BAAL_GAS_BUFFER_PERCENT = 120;
+
+// Minimal ERC-20 read ABI. Used by readBalances for optional --token balance lookups.
 const ERC20_ABI = [
   { type: 'function', name: 'balanceOf', stateMutability: 'view', inputs: [{ name: 'account', type: 'address' }], outputs: [{ type: 'uint256' }] },
   { type: 'function', name: 'decimals', stateMutability: 'view', inputs: [], outputs: [{ type: 'uint8' }] },
@@ -31,6 +53,15 @@ export async function readDaoDirect(config: Config, dao: `0x${string}`): Promise
     sponsorThreshold: sponsorThreshold.toString(),
     latestSponsoredProposalId: latestSponsoredProposalId.toString(),
   };
+}
+
+// Shared by the CLI (which parses --proposal-offering/--value into `explicit` itself)
+// and the MCP server's autoFetchProposalOffering flag.
+export async function resolveProposalOffering(config: Config, dao: `0x${string}`, explicit?: bigint): Promise<bigint> {
+  if (explicit != null) return explicit;
+  const daoState = await readDaoDirect(config, dao);
+  const offering = daoState.proposalOffering;
+  return typeof offering === 'string' ? parseBigint(offering) : 0n;
 }
 
 export async function readProposalDirect(config: Config, dao: `0x${string}`, proposal: number): Promise<Record<string, unknown>> {
@@ -124,6 +155,25 @@ export async function readTreasuryTokens(input: {
   };
 }
 
+// DAO profile + proposal history in one call, mirroring moloch.mjs's
+// graph-dao-history. The hosted service has no combined endpoint, so this
+// composes the two GETs the service does offer (dao + proposals).
+export async function readDaoHistory(input: {
+  config: Config;
+  service: ServiceClient;
+  dao: `0x${string}`;
+  first: number;
+  skip: number;
+}): Promise<Record<string, unknown>> {
+  const [daoResult, proposalsResult] = await Promise.all([
+    input.service.dao({ dao: input.dao }),
+    input.service.proposals({ dao: input.dao, first: input.first, skip: input.skip }),
+  ]);
+  const dao = isRecord(daoResult) && isRecord(daoResult.dao) ? daoResult.dao : undefined;
+  const proposals = extractProposals(proposalsResult);
+  return { dao, proposals };
+}
+
 export async function proposalLifecycle(input: {
   config: Config;
   service: ServiceClient;
@@ -153,6 +203,49 @@ export async function proposalLifecycle(input: {
     indexedError,
     mode: indexedError ? 'chain-fallback' : 'indexed+chain',
   };
+}
+
+// Wraps proposalLifecycle with the two checks moloch.mjs's process command runs
+// before broadcasting that this repo's `process` case didn't: already-processed,
+// and (when the caller supplies --proposal-data) that it matches what's indexed.
+export async function preflightProcess(input: {
+  config: Config;
+  service: ServiceClient;
+  dao: `0x${string}`;
+  proposal: number;
+  proposalData?: Hex;
+}): Promise<{
+  ok: boolean;
+  reason?: string;
+  status: string;
+  lifecycle: Record<string, unknown>;
+  indexedProposalData?: `0x${string}`;
+  processGasLimit?: string;
+}> {
+  const result = await proposalLifecycle({ config: input.config, service: input.service, dao: input.dao, proposal: input.proposal });
+  const lifecycle = result.lifecycle as Record<string, unknown>;
+  const status = String(lifecycle.status ?? 'unknown');
+  const processGasLimit = typeof lifecycle.processGasLimit === 'string' ? lifecycle.processGasLimit : undefined;
+
+  let indexedProposalData: `0x${string}` | undefined;
+  try {
+    const indexed = await input.service.proposal({ dao: input.dao, proposal: String(input.proposal) });
+    indexedProposalData = extractProposal(indexed)?.proposalData;
+  } catch {
+    // Indexer unreachable — fall through with indexedProposalData left undefined;
+    // the calldata-match check below is simply skipped in that case.
+  }
+
+  if (lifecycle.processed === true) {
+    return { ok: false, reason: `Proposal ${input.proposal} is already processed.`, status, lifecycle, indexedProposalData, processGasLimit };
+  }
+  if (!lifecycle.processableNow) {
+    return { ok: false, reason: `Proposal ${input.proposal} is not processable now: ${status}.`, status, lifecycle, indexedProposalData, processGasLimit };
+  }
+  if (input.proposalData && indexedProposalData && input.proposalData.toLowerCase() !== indexedProposalData.toLowerCase()) {
+    return { ok: false, reason: `Proposal ${input.proposal} proposalData does not match indexed proposalData.`, status, lifecycle, indexedProposalData, processGasLimit };
+  }
+  return { ok: true, status, lifecycle, indexedProposalData, processGasLimit };
 }
 
 export async function processQueue(input: {
@@ -253,90 +346,37 @@ export async function buildOldestReadyProcessTx(input: {
   });
 }
 
-function publicClient(config: Config) {
-  if (!config.rpcUrl) throw new Error('RPC_URL is required for direct chain reads.');
-  if (config.chainId !== 8453) throw new Error('Only Base chainId 8453 is currently supported for direct chain reads.');
-  return createPublicClient({ chain: base, transport: http(config.rpcUrl) });
+// Simulates the DAO's Safe running the multisend via its Baal module (the same
+// path a passed proposal executes through) to estimate a safe submitProposal
+// baalGas stipend. Ported from moloch.mjs's estimateBaalGas — this repo's CLI
+// defaults baalGas to 0 (correctness-safe), this is an opt-in refinement.
+export async function estimateBaalGas(input: {
+  config: Config;
+  service: ServiceClient;
+  dao: `0x${string}`;
+  proposalData: Hex;
+  actionCount: number;
+  bufferPercent?: number;
+}): Promise<{ baalGas: string; rawEstimate: string; bufferPercent: number; safeAddress: `0x${string}` }> {
+  const safeAddress = await safeAddressForDao(input.service, input.dao);
+  const client = publicClient(input.config);
+  const moduleData = encodeFunctionData({
+    abi: GNOSIS_MODULE_ABI,
+    functionName: 'execTransactionFromModule',
+    args: [getNetwork(input.config.chainId).contracts.GNOSIS_MULTISEND, 0n, input.proposalData, 1],
+  });
+  const rawEstimate = await client.estimateGas({ account: input.dao, to: safeAddress, value: 0n, data: moduleData });
+  const withActionBuffer = rawEstimate + BigInt(input.actionCount) * ACTION_GAS_LIMIT_ADDITION;
+  const bufferPercent = input.bufferPercent ?? DEFAULT_BAAL_GAS_BUFFER_PERCENT;
+  const buffered = (withActionBuffer * BigInt(bufferPercent) + 99n) / 100n;
+  return { baalGas: buffered.toString(), rawEstimate: rawEstimate.toString(), bufferPercent, safeAddress };
 }
 
-async function safeAddressForDao(service: ServiceClient, dao: `0x${string}`): Promise<`0x${string}`> {
-  const indexed = await service.dao({ dao });
-  if (isRecord(indexed) && isRecord(indexed.dao) && typeof indexed.dao.safeAddress === 'string') {
-    return getAddress(indexed.dao.safeAddress);
-  }
-  throw new Error('Could not resolve DAO Safe address from indexed DAO data. Pass --address 0xSAFE.');
-}
-
-function explorerBaseUrl(chainId: number): string {
-  if (chainId === 8453) return 'https://basescan.org';
-  if (chainId === 1) return 'https://etherscan.io';
-  return 'https://basescan.org';
-}
-
-async function safeBalances(chainId: number, safeAddress: `0x${string}`): Promise<SafeBalance[]> {
-  const response = await fetch(`${safeApiBaseUrl(chainId)}/api/v1/safes/${safeAddress}/balances/?trusted=false`);
-  if (!response.ok) throw new Error(`Safe balances request failed: ${response.status}`);
-  return await response.json() as SafeBalance[];
-}
-
-function safeApiBaseUrl(chainId: number): string {
-  if (chainId === 8453) return 'https://safe-transaction-base.safe.global';
-  if (chainId === 1) return 'https://safe-transaction-mainnet.safe.global';
-  throw new Error(`Safe balance lookup is not configured for chainId ${chainId}.`);
-}
-
-async function chainProposalContext(config: Config, dao: `0x${string}`, proposal: IndexedProposal): Promise<Record<string, unknown>> {
-  const client = publicClient(config);
-  const id = Number(proposal.proposalId);
-  const [rawStatus, state, raw] = await Promise.all([
-    client.readContract({ address: dao, abi: BAAL_ABI, functionName: 'getProposalStatus', args: [id] }),
-    client.readContract({ address: dao, abi: BAAL_ABI, functionName: 'state', args: [id] }),
-    client.readContract({ address: dao, abi: BAAL_ABI, functionName: 'proposals', args: [BigInt(id)] }),
-  ]);
-  const tuple = namedProposalTuple(raw);
-  const prevId = Number(tuple.prevProposalId || proposal.prevProposalId || 0);
-  const prevState = await client.readContract({ address: dao, abi: BAAL_ABI, functionName: 'state', args: [prevId] });
-  const baalGas = BigInt(tuple.baalGas || '0');
-  return {
-    namedStatus: namedProposalStatus(rawStatus),
-    state: Number(state),
-    prevState: Number(prevState),
-    proposal: tuple,
-    processGasLimit: (baalGas > 0n ? baalGas + PROCESS_PROPOSAL_GAS_LIMIT_ADDITION : DEFAULT_PROCESS_GAS_LIMIT).toString(),
-  };
-}
-
-async function chainOnlyProposal(config: Config, dao: `0x${string}`, proposalId: number): Promise<IndexedProposal> {
-  const client = publicClient(config);
-  const [raw, rawStatus, state] = await Promise.all([
-    client.readContract({ address: dao, abi: BAAL_ABI, functionName: 'proposals', args: [BigInt(proposalId)] }),
-    client.readContract({ address: dao, abi: BAAL_ABI, functionName: 'getProposalStatus', args: [proposalId] }),
-    client.readContract({ address: dao, abi: BAAL_ABI, functionName: 'state', args: [proposalId] }),
-  ]);
-  const tuple = namedProposalTuple(raw);
-  const status = namedProposalStatus(rawStatus);
-  return {
-    id: `${dao}-proposal-${proposalId}`,
-    proposalId,
-    prevProposalId: tuple.prevProposalId,
-    sponsored: Number(tuple.votingStarts || '0') > 0,
-    processed: Boolean(status.processed),
-    cancelled: Boolean(status.cancelled),
-    passed: Boolean(status.passed),
-    actionFailed: Boolean(status.actionFailed),
-    votingStarts: tuple.votingStarts,
-    votingEnds: tuple.votingEnds,
-    graceEnds: tuple.graceEnds,
-    expiration: tuple.expiration,
-    yesVotes: tuple.yesVotes,
-    noVotes: tuple.noVotes,
-    title: `Proposal ${proposalId}`,
-    proposalType: 'UNKNOWN_CHAIN_ONLY',
-    chainState: Number(state),
-  };
-}
-
-function deriveProposalLifecycle(proposal: IndexedProposal, now = Math.floor(Date.now() / 1000), chain: Record<string, unknown> = {}) {
+// Exported so its output can be checked against the shared fixture in
+// test/fixtures/proposal-lifecycle.fixture.json — the same fixture
+// moloch-skills' moloch.mjs tests against — as a drift tripwire between the
+// two independent implementations of this state machine.
+export function deriveProposalLifecycle(proposal: IndexedProposal, now = Math.floor(Date.now() / 1000), chain: Record<string, unknown> = {}) {
   const sponsored = Boolean(proposal.sponsored);
   const chainStatus = isRecord(chain.namedStatus) ? chain.namedStatus : {};
   const hasChainStatus = Array.isArray(chainStatus.raw);
@@ -405,6 +445,89 @@ function deriveProposalLifecycle(proposal: IndexedProposal, now = Math.floor(Dat
   };
 }
 
+export function extractProposal(value: unknown): IndexedProposal | undefined {
+  if (isRecord(value) && isRecord(value.proposal)) return value.proposal as IndexedProposal;
+  return undefined;
+}
+
+function publicClient(config: Config) {
+  if (!config.rpcUrl) throw new Error('RPC_URL is required for direct chain reads.');
+  return createPublicClient({ chain: getViemChain(config.chainId), transport: http(config.rpcUrl) });
+}
+
+async function safeAddressForDao(service: ServiceClient, dao: `0x${string}`): Promise<`0x${string}`> {
+  const indexed = await service.dao({ dao });
+  if (isRecord(indexed) && isRecord(indexed.dao) && typeof indexed.dao.safeAddress === 'string') {
+    return getAddress(indexed.dao.safeAddress);
+  }
+  throw new Error('Could not resolve DAO Safe address from indexed DAO data. Pass --address 0xSAFE.');
+}
+
+function explorerBaseUrl(chainId: number): string {
+  return getNetwork(chainId).explorerBaseUrl;
+}
+
+async function safeBalances(chainId: number, safeAddress: `0x${string}`): Promise<SafeBalance[]> {
+  const response = await fetch(`${safeApiBaseUrl(chainId)}/api/v1/safes/${safeAddress}/balances/?trusted=false`);
+  if (!response.ok) throw new Error(`Safe balances request failed: ${response.status}`);
+  return await response.json() as SafeBalance[];
+}
+
+function safeApiBaseUrl(chainId: number): string {
+  return getNetwork(chainId).safeApiBaseUrl;
+}
+
+async function chainProposalContext(config: Config, dao: `0x${string}`, proposal: IndexedProposal): Promise<Record<string, unknown>> {
+  const client = publicClient(config);
+  const id = Number(proposal.proposalId);
+  const [rawStatus, state, raw] = await Promise.all([
+    client.readContract({ address: dao, abi: BAAL_ABI, functionName: 'getProposalStatus', args: [id] }),
+    client.readContract({ address: dao, abi: BAAL_ABI, functionName: 'state', args: [id] }),
+    client.readContract({ address: dao, abi: BAAL_ABI, functionName: 'proposals', args: [BigInt(id)] }),
+  ]);
+  const tuple = namedProposalTuple(raw);
+  const prevId = Number(tuple.prevProposalId || proposal.prevProposalId || 0);
+  const prevState = await client.readContract({ address: dao, abi: BAAL_ABI, functionName: 'state', args: [prevId] });
+  const baalGas = BigInt(tuple.baalGas || '0');
+  return {
+    namedStatus: namedProposalStatus(rawStatus),
+    state: Number(state),
+    prevState: Number(prevState),
+    proposal: tuple,
+    processGasLimit: (baalGas > 0n ? baalGas + PROCESS_PROPOSAL_GAS_LIMIT_ADDITION : DEFAULT_PROCESS_GAS_LIMIT).toString(),
+  };
+}
+
+async function chainOnlyProposal(config: Config, dao: `0x${string}`, proposalId: number): Promise<IndexedProposal> {
+  const client = publicClient(config);
+  const [raw, rawStatus, state] = await Promise.all([
+    client.readContract({ address: dao, abi: BAAL_ABI, functionName: 'proposals', args: [BigInt(proposalId)] }),
+    client.readContract({ address: dao, abi: BAAL_ABI, functionName: 'getProposalStatus', args: [proposalId] }),
+    client.readContract({ address: dao, abi: BAAL_ABI, functionName: 'state', args: [proposalId] }),
+  ]);
+  const tuple = namedProposalTuple(raw);
+  const status = namedProposalStatus(rawStatus);
+  return {
+    id: `${dao}-proposal-${proposalId}`,
+    proposalId,
+    prevProposalId: tuple.prevProposalId,
+    sponsored: Number(tuple.votingStarts || '0') > 0,
+    processed: Boolean(status.processed),
+    cancelled: Boolean(status.cancelled),
+    passed: Boolean(status.passed),
+    actionFailed: Boolean(status.actionFailed),
+    votingStarts: tuple.votingStarts,
+    votingEnds: tuple.votingEnds,
+    graceEnds: tuple.graceEnds,
+    expiration: tuple.expiration,
+    yesVotes: tuple.yesVotes,
+    noVotes: tuple.noVotes,
+    title: `Proposal ${proposalId}`,
+    proposalType: 'UNKNOWN_CHAIN_ONLY',
+    chainState: Number(state),
+  };
+}
+
 function queueItem(proposal: IndexedProposal, lifecycle: Record<string, unknown>) {
   return {
     proposalId: String(proposal.proposalId),
@@ -449,11 +572,6 @@ function namedProposalTuple(raw: readonly unknown[]): Record<string, string> {
 
 function stringifyValue(value: unknown): string {
   return typeof value === 'bigint' ? value.toString() : String(value);
-}
-
-function extractProposal(value: unknown): IndexedProposal | undefined {
-  if (isRecord(value) && isRecord(value.proposal)) return value.proposal as IndexedProposal;
-  return undefined;
 }
 
 function extractProposals(value: unknown): IndexedProposal[] {

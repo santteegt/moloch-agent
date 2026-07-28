@@ -13,15 +13,22 @@ test('getConfig applies defaults', () => {
 test('getConfig applies overrides', () => {
   const config = getConfig({
     MOLOCH_SERVICE_URL: 'https://example.test/',
-    CHAIN_ID: '84532',
+    CHAIN_ID: '8453',
     RPC_URL: 'https://rpc.example.test',
     IPFS_GATEWAY_URL: 'https://gateway.example.test/ipfs/',
   });
 
   assert.equal(config.serviceUrl, 'https://example.test');
-  assert.equal(config.chainId, 84532);
+  assert.equal(config.chainId, 8453);
   assert.equal(config.rpcUrl, 'https://rpc.example.test');
   assert.equal(config.ipfsGatewayUrl, 'https://gateway.example.test/ipfs/');
+});
+
+test('getConfig rejects an unsupported chain ID immediately, even without --build-only in play', () => {
+  assert.throws(
+    () => getConfig({ CHAIN_ID: '84532' }),
+    /Chain ID 84532 is not supported/,
+  );
 });
 
 test('normalizeServiceUrl strips trailing slash', () => {

@@ -1,0 +1,127 @@
+{
+  "purpose": "Reference fixtures for proposal lifecycle transitions. These are small synthetic examples for agents/tests, not live DAO data.",
+  "cases": [
+    {
+      "name": "unsponsored",
+      "proposal": {
+        "proposalId": "1",
+        "sponsored": false,
+        "cancelled": false,
+        "processed": false,
+        "passed": false,
+        "actionFailed": false,
+        "votingStarts": "0",
+        "votingEnds": "0",
+        "graceEnds": "0",
+        "yesBalance": "0",
+        "noBalance": "0",
+        "proposalData": "0x",
+        "dao": { "totalShares": "100", "quorumPercent": "20", "minRetentionPercent": "66" }
+      },
+      "expectedStatus": "unsponsored"
+    },
+    {
+      "name": "voting",
+      "proposal": {
+        "proposalId": "2",
+        "sponsored": true,
+        "cancelled": false,
+        "processed": false,
+        "passed": false,
+        "actionFailed": false,
+        "votingStarts": "100",
+        "votingEnds": "200",
+        "graceEnds": "300",
+        "yesBalance": "10",
+        "noBalance": "0",
+        "proposalData": "0x",
+        "dao": { "totalShares": "100", "quorumPercent": "20", "minRetentionPercent": "66" }
+      },
+      "now": 150,
+      "expectedStatus": "voting"
+    },
+    {
+      "name": "grace",
+      "proposal": {
+        "proposalId": "3",
+        "sponsored": true,
+        "cancelled": false,
+        "processed": false,
+        "passed": false,
+        "actionFailed": false,
+        "votingStarts": "100",
+        "votingEnds": "200",
+        "graceEnds": "300",
+        "yesBalance": "30",
+        "noBalance": "0",
+        "proposalData": "0x",
+        "dao": { "totalShares": "100", "quorumPercent": "20", "minRetentionPercent": "66" }
+      },
+      "now": 250,
+      "expectedStatus": "grace"
+    },
+    {
+      "name": "needs-processing",
+      "proposal": {
+        "proposalId": "4",
+        "prevProposalId": "3",
+        "sponsored": true,
+        "cancelled": false,
+        "processed": false,
+        "passed": false,
+        "actionFailed": false,
+        "votingStarts": "100",
+        "votingEnds": "200",
+        "graceEnds": "300",
+        "yesBalance": "30",
+        "noBalance": "0",
+        "proposalData": "0x1234",
+        "dao": { "totalShares": "100", "quorumPercent": "20", "minRetentionPercent": "66" }
+      },
+      "now": 350,
+      "chain": { "prevState": 6 },
+      "expectedStatus": "needsProcessing",
+      "expectedProcessableNow": true
+    },
+    {
+      "name": "failed-quorum",
+      "proposal": {
+        "proposalId": "5",
+        "sponsored": true,
+        "cancelled": false,
+        "processed": false,
+        "passed": false,
+        "actionFailed": false,
+        "votingStarts": "100",
+        "votingEnds": "200",
+        "graceEnds": "300",
+        "yesBalance": "10",
+        "noBalance": "0",
+        "proposalData": "0x",
+        "dao": { "totalShares": "100", "quorumPercent": "20", "minRetentionPercent": "66" }
+      },
+      "now": 350,
+      "expectedStatus": "failed"
+    },
+    {
+      "name": "processed-passed",
+      "proposal": {
+        "proposalId": "6",
+        "sponsored": true,
+        "cancelled": false,
+        "processed": true,
+        "passed": true,
+        "actionFailed": false,
+        "votingStarts": "100",
+        "votingEnds": "200",
+        "graceEnds": "300",
+        "yesBalance": "30",
+        "noBalance": "0",
+        "proposalData": "0x1234",
+        "dao": { "totalShares": "100", "quorumPercent": "20", "minRetentionPercent": "66" }
+      },
+      "now": 350,
+      "expectedStatus": "processedPassed"
+    }
+  ]
+}

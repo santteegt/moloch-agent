@@ -85,3 +85,15 @@ rather than an oversight:
   in two calls, which is exactly the "agent composes individual operations
   instead of a hidden multi-step function" model this server was built
   for in the first place.
+
+- **Single-member lookup** (`moloch-skills`' standalone `moloch.mjs`
+  script has a `graph-member --member 0x...` command; this repo has
+  neither a CLI nor an MCP equivalent) — unlike the exclusions above, this
+  isn't a design choice, it's a gap in `service.ts`'s `ServiceClient`
+  contract: `members()` only accepts `{ dao, first, skip }`, with no
+  address filter and no total count, so a single-member lookup would mean
+  an unbounded client-side scan through every member. `moloch_read_dao_history`
+  (composing `service.dao()` + `service.proposals()`) is included, by
+  contrast, because that combination needs no new server-side filter — it's
+  just two existing GETs made in parallel. Revisit this once the hosted
+  moloch-service grows a `?member=0x...` filter on its `/members` endpoint.
