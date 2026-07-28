@@ -7,7 +7,6 @@ import type { ServiceClient } from '../src/service.js';
 const dao = '0x0000000000000000000000000000000000000001' as `0x${string}`;
 
 const config: Config = {
-  serviceUrl: 'https://example.test',
   chainId: 8453,
 };
 
@@ -25,8 +24,25 @@ function stubServiceClient(overrides: Partial<ServiceClient> = {}): ServiceClien
   };
 }
 
+// rpcUrl always resolves from the chain registry now (there's no "unset"
+// state), so tests that want chain-augmented reads to fail fast — instead of
+// hitting the real network — point RPC_URL at a port nothing listens on.
+// Connections refuse immediately; chain.ts's try/catch around the RPC call
+// degrades to the same graph-only derivation the old "no RPC configured"
+// path exercised.
+async function withUnroutableRpc<T>(fn: () => Promise<T>): Promise<T> {
+  const original = process.env.RPC_URL;
+  process.env.RPC_URL = 'http://127.0.0.1:1';
+  try {
+    return await fn();
+  } finally {
+    if (original === undefined) delete process.env.RPC_URL;
+    else process.env.RPC_URL = original;
+  }
+}
+
 test('resolveProposalOffering returns the explicit value without any chain read', async () => {
-  const offering = await resolveProposalOffering({ ...config, rpcUrl: undefined }, dao, 42n);
+  const offering = await resolveProposalOffering(config, dao, 42n);
 
   assert.equal(offering, 42n);
 });
@@ -53,14 +69,14 @@ test('preflightProcess rejects a proposal still in voting', async () => {
     }),
   });
 
-  const result = await preflightProcess({ config: { ...config, rpcUrl: undefined }, service, dao, proposal: 2 });
+  const result = await withUnroutableRpc(() => preflightProcess({ config, service, dao, proposal: 2 }));
 
   assert.equal(result.ok, false);
   assert.equal(result.status, 'voting');
   assert.match(result.reason ?? '', /not processable now: voting/);
 });
 
-test('preflightProcess allows a proposal past grace with quorum and no RPC configured (graph-derived readiness)', async () => {
+test('preflightProcess allows a proposal past grace with quorum and an unreachable RPC (graph-derived readiness)', async () => {
   const now = Math.floor(Date.now() / 1000);
   const service = stubServiceClient({
     proposal: async () => ({
@@ -83,7 +99,7 @@ test('preflightProcess allows a proposal past grace with quorum and no RPC confi
     }),
   });
 
-  const result = await preflightProcess({ config: { ...config, rpcUrl: undefined }, service, dao, proposal: 4 });
+  const result = await withUnroutableRpc(() => preflightProcess({ config, service, dao, proposal: 4 }));
 
   assert.equal(result.ok, true);
   assert.equal(result.status, 'needsProcessing');
@@ -112,7 +128,7 @@ test('preflightProcess rejects an already-processed proposal even if it otherwis
     }),
   });
 
-  const result = await preflightProcess({ config: { ...config, rpcUrl: undefined }, service, dao, proposal: 6 });
+  const result = await withUnroutableRpc(() => preflightProcess({ config, service, dao, proposal: 6 }));
 
   assert.equal(result.ok, false);
   assert.match(result.reason ?? '', /already processed/);
@@ -140,7 +156,7 @@ test('preflightProcess rejects when the supplied proposalData does not match the
     }),
   });
 
-  const result = await preflightProcess({ config: { ...config, rpcUrl: undefined }, service, dao, proposal: 4, proposalData: '0xdeadbeef' });
+  const result = await withUnroutableRpc(() => preflightProcess({ config, service, dao, proposal: 4, proposalData: '0xdeadbeef' }));
 
   assert.equal(result.ok, false);
   assert.match(result.reason ?? '', /does not match indexed proposalData/);
@@ -173,7 +189,7 @@ test('estimateBaalGas surfaces the Safe-address resolution error before touching
   const service = stubServiceClient({ dao: async () => ({}) });
 
   await assert.rejects(
-    () => estimateBaalGas({ config: { ...config, rpcUrl: undefined }, service, dao, proposalData: '0x1234', actionCount: 1 }),
+    () => estimateBaalGas({ config, service, dao, proposalData: '0x1234', actionCount: 1 }),
     /Could not resolve DAO Safe address/,
   );
 });

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { Config } from './config.js';
+import { getNetwork } from './networks.js';
 
 const addressSchema = z.string().regex(/^0x[a-fA-F0-9]{40}$/);
 
@@ -15,7 +16,7 @@ export type ServiceClient = {
 };
 
 export function createServiceClient(config: Config): ServiceClient {
-  const base = config.serviceUrl;
+  const base = getNetwork(config.chainId).serviceUrl;
   const chainId = config.chainId;
 
   return {

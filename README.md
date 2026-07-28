@@ -77,6 +77,7 @@ npm publish --access public --otp 123456
 ```bash
 moloch-agent health
 moloch-agent capabilities
+moloch-agent networks
 moloch-agent account
 moloch-agent dao --dao 0xDAO
 moloch-agent proposals --dao 0xDAO
@@ -202,9 +203,10 @@ Alongside the CLI, this package ships an MCP (Model Context Protocol) server tha
 
 **Build-only, no signing, Base mainnet only.** Every write tool (`moloch_summon`, `moloch_wrap_eth`, `moloch_submit_tribute`, `moloch_vote`, ...) returns an unsigned `{to, value, data, chainId}` transaction and never touches `PRIVATE_KEY` or any signing path — this server has no signing tool at all. This is the same boundary the CLI's `--build-only` flag already enforces (see "Boundaries" below); the MCP server extends that boundary to a new transport instead of relaxing it. Callers are responsible for signing and broadcasting the returned transaction with their own wallet infrastructure. The server only supports Base (`chainId 8453`) and refuses to start otherwise.
 
-Tools (39 total — this covers nearly all of `moloch-agent`'s CLI commands; see `docs/MCP_SERVER_SCOPE.md` for the naming convention and the handful deliberately left out and why):
+Tools (40 total — this covers nearly all of `moloch-agent`'s CLI commands; see `docs/MCP_SERVER_SCOPE.md` for the naming convention and the handful deliberately left out and why):
 
 - **Write, build-only** (`src/tx.ts` builders): `moloch_summon`, `moloch_wrap_eth`, `moloch_unwrap_eth`, `moloch_approve_token`, `moloch_submit_tribute` (covers the CLI's tribute/join-dao/swap/token-swap aliases), `moloch_sponsor`, `moloch_vote`, `moloch_process`, `moloch_process_ready`, `moloch_cancel`, `moloch_ragequit`, `moloch_post_memory`, `moloch_submit_signal`, `moloch_update_dao_meta`, `moloch_submit_dao_record` (generalizes `moloch_update_dao_meta` to an arbitrary Poster table), `moloch_update_gov_settings`, `moloch_update_token_settings`, `moloch_submit_custom_proposal`, `moloch_mint_shares`, `moloch_mint_loot`, `moloch_submit_payment`
+- **Read, static registry data** (`src/networks.ts`, no I/O): `moloch_list_networks`
 - **Read, direct/blended chain reads** (`src/chain.ts`): `moloch_read_dao`, `moloch_read_dao_history`, `moloch_read_proposal`, `moloch_read_proposal_lifecycle`, `moloch_preflight_process`, `moloch_decode_proposal`, `moloch_estimate_baal_gas`, `moloch_list_process_queue`, `moloch_read_balances`, `moloch_list_treasury_tokens`
 - **Read/write, hosted-service passthroughs** (`src/service.ts`'s `ServiceClient`, prefixed `moloch_service_*`): `moloch_service_get_dao`, `moloch_service_get_proposal`, `moloch_service_list_proposals`, `moloch_service_list_members`, `moloch_service_list_records`, `moloch_service_get_health`, `moloch_service_get_capabilities`, `moloch_service_pin_json`
 
@@ -295,7 +297,8 @@ returns `{ cid, uri, gatewayUrl }` — `uri` is what you'd pass as `link`/`works
 - The service must never receive private keys.
 - `process-queue` and `process-ready` use direct chain state and do not rely on indexed `passed` as the execution gate.
 - `process` runs a preflight (processableNow, not already processed, `--proposal-data` matches the indexer) before broadcasting; `--skip-preflight` bypasses it.
-- Contract addresses and Poster tags are resolved per-chain from `src/networks.ts`; an unsupported `CHAIN_ID` fails immediately at startup, for both the CLI and the MCP server, including under `--build-only`.
+- Contract addresses, Poster tags, and default RPC/service URLs are resolved per-chain from `src/networks.ts` (`networks` / `moloch_list_networks` list the registry); an unsupported `CHAIN_ID` fails immediately at startup, for both the CLI and the MCP server, including under `--build-only`.
+- `RPC_URL`/`MOLOCH_SERVICE_URL` override the current chain's registry defaults when set — `Config` no longer carries these fields itself, they're resolved fresh from the registry (plus any env override) at the point of use.
 - `RPC_URL` defaults to `https://mainnet.base.org` so the CLI works out of the box.
 - Always-on agents should set a managed Base RPC URL for reliability.
 - The MCP server (see "MCP server" above) extends this same boundary to a new transport: it never signs, never broadcasts, and has no access to `PRIVATE_KEY`.

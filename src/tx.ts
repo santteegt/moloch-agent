@@ -12,7 +12,7 @@ import {
 } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import type { Config } from './config.js';
-import { getNetwork, getViemChain } from './networks.js';
+import { getNetwork } from './networks.js';
 
 // Protocol-level sentinels, not per-chain deployments — kept as plain constants.
 // Per-chain deployment addresses and Poster tags live in ./networks.js.
@@ -1034,13 +1034,12 @@ export type SendOptions = {
 
 export async function maybeSend(config: Config, built: BuiltTx, send: boolean, options: SendOptions = {}): Promise<BuiltTx | SendResult> {
   if (!send) return built;
-  if (!config.rpcUrl) throw new Error('RPC_URL is required for --send.');
   if (!config.privateKey) throw new Error('PRIVATE_KEY is required for --send.');
-  const viemChain = getViemChain(config.chainId);
+  const network = getNetwork(config.chainId);
 
   const account = privateKeyToAccount(config.privateKey);
-  const publicClient = createPublicClient({ chain: viemChain, transport: http(config.rpcUrl) });
-  const walletClient = createWalletClient({ account, chain: viemChain, transport: http(config.rpcUrl) });
+  const publicClient = createPublicClient({ chain: network.viemChain, transport: http(network.rpcUrl) });
+  const walletClient = createWalletClient({ account, chain: network.viemChain, transport: http(network.rpcUrl) });
   const request = await publicClient.prepareTransactionRequest({
     account,
     to: built.tx.to,

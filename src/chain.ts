@@ -1,6 +1,6 @@
 import { createPublicClient, encodeFunctionData, formatEther, formatUnits, getAddress, http, type Hex } from 'viem';
 import type { Config } from './config.js';
-import { getNetwork, getViemChain } from './networks.js';
+import { getNetwork } from './networks.js';
 import type { ServiceClient } from './service.js';
 import { BAAL_ABI, BAAL_ETH_TOKEN, GNOSIS_MODULE_ABI, parseBigint, type BuiltTx } from './tx.js';
 import { buildProcessTx } from './tx.js';
@@ -189,12 +189,10 @@ export async function proposalLifecycle(input: {
   }
   const proposal = extractProposal(indexed) || await chainOnlyProposal(input.config, input.dao, input.proposal);
   let chain: Record<string, unknown> = {};
-  if (input.config.rpcUrl) {
-    try {
-      chain = await chainProposalContext(input.config, input.dao, proposal);
-    } catch (error) {
-      chain = { error: compactError(error) };
-    }
+  try {
+    chain = await chainProposalContext(input.config, input.dao, proposal);
+  } catch (error) {
+    chain = { error: compactError(error) };
   }
   return {
     proposal: compactProposal(proposal),
@@ -279,21 +277,6 @@ export async function processQueue(input: {
       !Boolean(proposal.cancelled) &&
       !Boolean(proposal.processed)
     ));
-
-  if (!input.config.rpcUrl) {
-    return {
-      dao: input.dao,
-      queue: candidates
-        .sort((a, b) => Number(a.proposalId) - Number(b.proposalId))
-        .map((proposal, index) => ({
-          ...queueItem(proposal, deriveProposalLifecycle(proposal)),
-          queueIndex: index,
-          processFirst: index === 0,
-          status: 'needsChainPreflight',
-          note: 'Set RPC_URL to verify direct chain processability.',
-        })),
-    };
-  }
 
   const checked = await Promise.all(candidates.map(async (proposal) => {
     try {
@@ -451,8 +434,8 @@ export function extractProposal(value: unknown): IndexedProposal | undefined {
 }
 
 function publicClient(config: Config) {
-  if (!config.rpcUrl) throw new Error('RPC_URL is required for direct chain reads.');
-  return createPublicClient({ chain: getViemChain(config.chainId), transport: http(config.rpcUrl) });
+  const network = getNetwork(config.chainId);
+  return createPublicClient({ chain: network.viemChain, transport: http(network.rpcUrl) });
 }
 
 async function safeAddressForDao(service: ServiceClient, dao: `0x${string}`): Promise<`0x${string}`> {

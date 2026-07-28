@@ -8,13 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- MCP server (`moloch-agent-mcp` bin / `src/mcp-server.ts`) exposing 39
+- MCP server (`moloch-agent-mcp` bin / `src/mcp-server.ts`) exposing 40
   tools over stdio, wrapping the existing `src/tx.ts` transaction builders,
   `src/chain.ts` reads, and `src/service.ts` hosted-service calls for use by
   external agent orchestrators — a structured alternative to spawning the
   CLI and parsing stdout. See the README's "MCP server" section for the
   tool list and `docs/MCP_SERVER_SCOPE.md` for the naming convention and
   the handful of CLI commands intentionally not exposed as tools.
+- CLI `networks` command and MCP `moloch_list_networks` tool: lists the
+  static chain registry (`src/networks.ts`) — default RPC/service URLs,
+  contract addresses, and Poster tags for every chain this tool supports.
 - CLI `dao-record` command and MCP `moloch_submit_dao_record` tool: posts to
   an arbitrary Poster table via a proposal (`dao-meta`/`moloch_update_dao_meta`
   are now thin wrappers over this for the `daoProfile` table specifically).
@@ -45,3 +48,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Renamed the MCP tool `moloch_proposals` to `moloch_service_list_proposals`,
   for naming consistency with the other direct `ServiceClient` passthrough
   tools (`moloch_service_*`).
+- `Config` no longer carries `serviceUrl`/`rpcUrl` directly; both are now
+  resolved from the per-chain registry (`getNetwork(config.chainId)`) at the
+  point of use, with `RPC_URL`/`MOLOCH_SERVICE_URL` still applied as
+  per-invocation overrides on top of each chain's registry default. No
+  behavior change for CLI/MCP users — this only affects code that
+  constructs a `Config` object directly.

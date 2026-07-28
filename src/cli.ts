@@ -4,7 +4,7 @@ import { readJsonFile } from './files.js';
 import { helpText } from './help.js';
 import { getConfig, type Config } from './config.js';
 import { decodeProposal } from './decode.js';
-import { getNetwork } from './networks.js';
+import { getNetwork, listNetworks } from './networks.js';
 import { createServiceClient, type ServiceClient } from './service.js';
 import { printCompact, printJson } from './output.js';
 import { buildOldestReadyProcessTx, estimateBaalGas, preflightProcess, processQueue, proposalLifecycle, readBalances, readDaoDirect, readDaoHistory, readProposalDirect, readTreasuryTokens, resolveProposalOffering } from './chain.js';
@@ -70,6 +70,10 @@ async function main() {
 
     case 'capabilities':
       output = await service.capabilities();
+      break;
+
+    case 'networks':
+      output = { networks: listNetworks().map(({ viemChain, ...network }) => network) };
       break;
 
     case 'account':

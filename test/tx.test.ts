@@ -9,7 +9,6 @@ const dao = '0x0000000000000000000000000000000000000001';
 
 test('signerAccount derives exact account address from private key', () => {
   const account = signerAccount({
-    serviceUrl: 'https://example.test',
     chainId: 8453,
     privateKey: '0x0000000000000000000000000000000000000000000000000000000000000001',
   });
